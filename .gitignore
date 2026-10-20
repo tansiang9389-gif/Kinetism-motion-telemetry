@@ -1,0 +1,7 @@
+.pio/
+.pytest_cache/
+__pycache__/
+*.py[cod]
+.venv/
+include/secrets.h
+
