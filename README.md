@@ -20,6 +20,48 @@ capture and authenticated phone/PC patient-record sync are not implemented.
 See the [app documentation](apps/medical_device_app/README.md) for the exact
 feature boundaries, installation details and verified APK checksum.
 
+## App features
+
+The current Flutter app is an exercise-tracking prototype. Connected tracking
+requires the compatible paired-arm BLE firmware; cloud records require a
+working Firebase backend. These integrations still need physical-device and
+backend validation.
+
+| Feature | What you can do |
+| --- | --- |
+| **Session record log** | Browse saved exercise sessions, search records, filter by exercise and open session details. |
+| **Progress overview** | See actual daily repetition totals and a chart of the seven most recent recorded sessions. |
+| **Exercise library** | Choose an existing exercise or create one with a target joint, resting/peak angle thresholds, daily repetition goal and demonstration video URL. Form inputs are validated before saving. |
+| **Live BLE arm tracking** | View raw upper-arm/forearm orientation and an estimated elbow angle from the paired sensors. This is not an anatomically calibrated joint measurement. |
+| **Automatic repetition counting** | Count a repetition after reaching the configured peak and returning to rest, including movements exactly at the thresholds. |
+| **Exercise demonstration videos** | Watch configured guidance videos alongside the tracker. On narrow screens, the sensor readout appears before the optional video. |
+| **Goals and Android reminders** | Adjust exercise repetition targets and enable daily reminders, subject to notification permission on the phone. |
+| **Report archive** | Open previously saved AI-assisted report drafts. These are not MMT grades; new AI report generation is unconfigured in the public APK. |
+| **Clear data and recovery states** | See loading, connection, video and save errors. Cached records and pending cloud writes are labelled separately, and missing counts/dates are not replaced with invented values. |
+| **Readable Kinetism interface** | Use a responsive dark/teal interface with large controls and validation messages that remain readable on narrow screens and with enlarged text. |
+
+### Typical exercise session
+
+1. Open the session log and select **Start exercise**.
+2. Choose an existing exercise or create one with the movement thresholds and
+   repetition goal you want to track.
+3. Connect the paired arm sensors, perform the movement and watch the raw angle
+   and repetition counter. Use the demonstration video if configured.
+4. End and save the session, then return to the log to review the recorded
+   exercise, repetitions and date.
+
+**Current record limits:** sessions share the prototype patient ID
+`patient_123`; there is no patient selection or separate patient history yet.
+Session records do not store angle, force or MMT position-capture attempts.
+Pending writes are not confirmed backups until the backend acknowledges them.
+
+### Explore the screens without hardware
+
+The [synthetic browser preview](apps/medical_device_app/README.md#local-synthetic-preview)
+lets you explore the main screens without Firebase, BLE, AI, video playback or
+device notifications. Its sample records and local changes are temporary,
+not real patient data or phone/PC record synchronisation.
+
 ## Project layout
 
 | Folder | Purpose |
