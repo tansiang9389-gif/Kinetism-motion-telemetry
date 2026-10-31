@@ -625,14 +625,11 @@ void main() {
     await tester.pumpWidget(const KinetismPreviewApp());
     await tester.pumpAndSettle();
     expect(find.textContaining('Preview: synthetic data.'), findsOneWidget);
-    await tester.tap(find.text('Start exercise'));
+    expect(find.text('Select patient'), findsOneWidget);
+    await tester.tap(find.text('Ahmad Razak'));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Elbow flexion'));
-    await tester.pumpAndSettle();
-    expect(
-      find.text('Synthetic sample, not a live connection'),
-      findsOneWidget,
-    );
+    expect(find.text('Measure'), findsOneWidget);
+    expect(find.text('Record log'), findsOneWidget);
     expect(Firebase.apps, isEmpty);
     expect(tester.takeException(), isNull);
   });

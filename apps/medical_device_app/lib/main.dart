@@ -18,8 +18,14 @@ import 'app_design.dart';
 import 'sensor_frame.dart';
 import 'arm_tracker_view.dart';
 import 'repetition_cycle.dart';
+import 'clinical_models.dart';
+import 'clinical_workflow.dart';
+import 'past_reports.dart';
+import 'prescriptions.dart';
 
 export 'arm_tracker_view.dart' show ArmTrackerView, ArmSkeletonPainter;
+export 'clinical_models.dart';
+export 'clinical_workflow.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -78,7 +84,7 @@ class _AppStartupState extends State<AppStartup> {
       builder: (context, snapshot) {
         if (snapshot.connectionState == ConnectionState.done &&
             !snapshot.hasError) {
-          return widget.child ?? const TherapistDashboard();
+          return widget.child ?? const ConnectedClinicalShell();
         }
         return Scaffold(
           appBar: AppBar(title: const KinetismBrand()),
@@ -580,6 +586,271 @@ class _VisualizerScreenState extends State<VisualizerScreen> {
       onOpenLog: () => Navigator.push(
         context,
         MaterialPageRoute<void>(builder: (_) => const TherapistDashboard()),
+      ),
+    );
+  }
+}
+
+class ConnectedClinicalShell extends StatefulWidget {
+  const ConnectedClinicalShell({super.key});
+
+  @override
+  State<ConnectedClinicalShell> createState() => _ConnectedClinicalShellState();
+}
+
+class _ConnectedClinicalShellState extends State<ConnectedClinicalShell> {
+  late final KinetismClinicalController _controller;
+  StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _patientSub;
+  StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _recordSub;
+  StreamSubscription<List<ScanResult>>? _scanSub;
+  StreamSubscription<List<int>>? _sensorSub;
+  BluetoothDevice? _connectedDevice;
+  bool _scanning = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = KinetismClinicalController(
+      onPersistPatient: _persistPatientToCloud,
+      onPersistRecord: _persistRecordToCloud,
+      onConnectSensors: _scanAndConnectBle,
+    );
+    _subscribeCloud();
+  }
+
+  void _subscribeCloud() {
+    try {
+      _patientSub = FirebaseFirestore.instance
+          .collection('Patients')
+          .snapshots()
+          .listen((snapshot) {
+            final loaded = snapshot.docs.map((doc) {
+              final data = Map<String, dynamic>.of(doc.data());
+              final rawDate = data['updatedAt'];
+              if (rawDate is Timestamp) data['updatedAt'] = rawDate.toDate();
+              return PatientProfile.fromMap(doc.id, data);
+            }).toList();
+            _controller.syncExternalData(patients: loaded);
+          }, onError: (_) {});
+
+      _recordSub = FirebaseFirestore.instance
+          .collection('MeasurementRecords')
+          .orderBy('date', descending: true)
+          .snapshots()
+          .listen((snapshot) {
+            final loaded = snapshot.docs.map((doc) {
+              final data = Map<String, dynamic>.of(doc.data());
+              final rawDate = data['date'];
+              if (rawDate is Timestamp) data['date'] = rawDate.toDate();
+              return MeasurementRecord.fromMap(doc.id, data);
+            }).toList();
+            _controller.syncExternalData(records: loaded);
+          }, onError: (_) {});
+    } catch (_) {
+      // Retains seeded in-memory records when cloud is unreachable.
+    }
+  }
+
+  Future<void> _persistPatientToCloud(PatientProfile patient) async {
+    try {
+      await FirebaseFirestore.instance
+          .collection('Patients')
+          .doc(patient.id)
+          .set({
+            ...patient.toMap(),
+            'updatedAt': FieldValue.serverTimestamp(),
+          }, SetOptions(merge: true))
+          .timeout(const Duration(seconds: 4));
+    } catch (_) {
+      // Local state in KinetismClinicalController is already updated.
+    }
+  }
+
+  Future<void> _persistRecordToCloud(MeasurementRecord record) async {
+    try {
+      await FirebaseFirestore.instance
+          .collection('MeasurementRecords')
+          .doc(record.id)
+          .set({
+            ...record.toMap(),
+            'date': FieldValue.serverTimestamp(),
+          })
+          .timeout(const Duration(seconds: 4));
+    } catch (_) {
+      // Local state in KinetismClinicalController is already updated.
+    }
+  }
+
+  Future<void> _scanAndConnectBle() async {
+    if (_scanning) return;
+    if (kIsWeb) {
+      _controller.updateLiveSensorPose(
+        angleDegrees: _controller.liveAngleDegrees,
+        status:
+            'Browser mode: adjust the movement position slider or presets below.',
+      );
+      return;
+    }
+    _scanning = true;
+    _controller.updateLiveSensorPose(
+      angleDegrees: _controller.liveAngleDegrees,
+      status: 'Scanning for Physio_A paired arm sensors...',
+    );
+    try {
+      await _scanSub?.cancel();
+      var found = false;
+      _scanSub = FlutterBluePlus.scanResults.listen((results) {
+        if (!mounted || found) return;
+        for (final result in results) {
+          if (result.advertisementData.advName == 'Physio_A') {
+            found = true;
+            _connectBleDevice(result.device);
+            break;
+          }
+        }
+      });
+      await FlutterBluePlus.startScan(
+        withNames: const ['Physio_A'],
+        timeout: const Duration(seconds: 4),
+      );
+      await Future<void>.delayed(const Duration(seconds: 4));
+      if (mounted && !found) {
+        _scanning = false;
+        _controller.updateLiveSensorPose(
+          angleDegrees: _controller.liveAngleDegrees,
+          status:
+              'Physio_A not detected nearby — using interactive sensor position.',
+        );
+      }
+    } catch (_) {
+      _scanning = false;
+      _controller.updateLiveSensorPose(
+        angleDegrees: _controller.liveAngleDegrees,
+        status:
+            'Bluetooth scan unavailable — using interactive sensor position.',
+      );
+    }
+  }
+
+  Future<void> _connectBleDevice(BluetoothDevice device) async {
+    try {
+      await FlutterBluePlus.stopScan();
+      await _scanSub?.cancel();
+      _connectedDevice = device;
+      await device.connect(timeout: const Duration(seconds: 12));
+      final services = await device.discoverServices();
+      BluetoothCharacteristic? telemetry;
+      for (final service in services) {
+        if (service.uuid != Guid('4fafc201-1fb5-459e-8fcc-c5c9c331914b')) {
+          continue;
+        }
+        for (final characteristic in service.characteristics) {
+          if (characteristic.uuid ==
+                  Guid('beb5483e-36e1-4688-b7f5-ea07361b26a8') &&
+              characteristic.properties.notify) {
+            telemetry = characteristic;
+          }
+        }
+      }
+      if (telemetry == null) {
+        _scanning = false;
+        return;
+      }
+      await telemetry.setNotifyValue(true);
+      await _sensorSub?.cancel();
+      _sensorSub = telemetry.onValueReceived.listen((bytes) {
+        try {
+          final frame = ArmSensorFrame.parse(bytes);
+          final vUpper = vector.Vector3(0, 1, 0);
+          final vFore = vector.Vector3(0, 1, 0);
+          frame.upper.rotate(vUpper);
+          frame.forearm.rotate(vFore);
+          final angleRad = vUpper.angleTo(vFore);
+          final elbowAngle = 180.0 - (angleRad * (180.0 / math.pi));
+          _controller.updateLiveSensorPose(
+            angleDegrees: elbowAngle,
+            status: 'Live BLE telemetry active (Physio_A)',
+          );
+        } catch (_) {}
+      });
+      _scanning = false;
+    } catch (_) {
+      _scanning = false;
+    }
+  }
+
+  @override
+  void dispose() {
+    _patientSub?.cancel();
+    _recordSub?.cancel();
+    _scanSub?.cancel();
+    _sensorSub?.cancel();
+    _connectedDevice?.disconnect();
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return KinetismClinicalFlowScreen(
+      controller: _controller,
+      drawer: Drawer(
+        child: SafeArea(
+          child: ListView(
+            padding: const EdgeInsets.symmetric(vertical: 16),
+            children: [
+              const Padding(
+                padding: EdgeInsets.all(24),
+                child: KinetismBrand(),
+              ),
+              ListTile(
+                leading: const Icon(Icons.people_outline),
+                title: const Text('Select patient'),
+                subtitle: const Text('Past patients, new patient & logs'),
+                onTap: () {
+                  Navigator.pop(context);
+                  _controller.goToStep(ClinicalStep.selectPatient);
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.library_books_outlined),
+                title: const Text('Overall record log'),
+                subtitle: const Text('All saved angle, force & MMT records'),
+                onTap: () {
+                  Navigator.pop(context);
+                  _controller.openOverallRecordLog();
+                },
+              ),
+              const Divider(),
+              ListTile(
+                leading: const Icon(Icons.description_outlined),
+                title: const Text('Report archive'),
+                onTap: () {
+                  Navigator.pop(context);
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute<void>(
+                      builder: (_) => const PastReportsScreen(),
+                    ),
+                  );
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.alarm),
+                title: const Text('Exercise goals & reminders'),
+                onTap: () {
+                  Navigator.pop(context);
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute<void>(
+                      builder: (_) => const PrescriptionsScreen(),
+                    ),
+                  );
+                },
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }

@@ -22,59 +22,47 @@ feature boundaries, installation details and verified APK checksum.
 
 ## App features
 
-The current Flutter app is an exercise-tracking prototype. Connected tracking
-requires the compatible paired-arm BLE firmware; cloud records require a
-working Firebase backend. These integrations still need physical-device and
-backend validation.
+The Flutter app implements the 9-step physiotherapist measurement and record-logging workflow around the paired-arm sensors (`Physio_A`):
 
 | Feature | What you can do |
 | --- | --- |
-| **Session record log** | Browse saved exercise sessions, search records, filter by exercise and open session details. |
-| **Progress overview** | See actual daily repetition totals and a chart of the seven most recent recorded sessions. |
-| **Exercise library** | Choose an existing exercise or create one with a target joint, resting/peak angle thresholds, daily repetition goal and demonstration video URL. Form inputs are validated before saving. |
-| **Live BLE arm tracking** | View raw upper-arm/forearm orientation and an estimated elbow angle from the paired sensors. This is not an anatomically calibrated joint measurement. |
-| **Automatic repetition counting** | Count a repetition after reaching the configured peak and returning to rest, including movements exactly at the thresholds. |
-| **Exercise demonstration videos** | Watch configured guidance videos alongside the tracker. On narrow screens, the sensor readout appears before the optional video. |
-| **Goals and Android reminders** | Adjust exercise repetition targets and enable daily reminders, subject to notification permission on the phone. |
-| **Report archive** | Open previously saved AI-assisted report drafts. These are not MMT grades; new AI report generation is unconfigured in the public APK. |
-| **Clear data and recovery states** | See loading, connection, video and save errors. Cached records and pending cloud writes are labelled separately, and missing counts/dates are not replaced with invented values. |
-| **Readable Kinetism interface** | Use a responsive dark/teal interface with large controls and validation messages that remain readable on narrow screens and with enlarged text. |
+| **1. Patient selection & creation** | Choose from the searchable list of past patients, register a **New patient** (`Patient name` and optional `Patient ID`), or open the **Overall record log** directly. |
+| **2. Measure or Record log sections** | Select **1 of 2 sections** for the chosen patient: **Measure** (to start a new body-part assessment) or **Record log** (to review saved measurements). |
+| **3. Body part selection (Arm first)** | Select which body part you are measuring (**Arm** is active first, using the upper-arm and forearm sensors). |
+| **4. Illustrated arm anthropometrics** | Key in **Circumference of bicep (cm)**, **Circumference of forearm (cm)**, and **Length of arm (cm)** guided by an on-screen anatomical diagram showing where to measure (`1 Bicep`, `2 Forearm`, `3 Length of arm`) for accurate force calculation. |
+| **5. Start measuring** | Press **Start measuring** once the patient's arm dimensions are recorded and the patient is wearing the sensors. |
+| **6. Position capture (Angle, Force, AI MMT grading)** | Ask the patient to perform the target movement and press **Record** when they reach the desired position. Records **Angle (°)**, biomechanical **Force (N)**, and **AI MMT grading (Grades 0–5)**. |
+| **7. Record again** | Press **Record again** to capture additional attempts in the same session without losing earlier recorded attempts. |
+| **8 & 9. Patient & Overall record logs** | Every recorded attempt is saved into the **Record log**. Physiotherapists can refer to the patient's **Record log** or the **Overall record log** across all patients at the end of the day. |
 
-### Typical exercise session
+### 9-step physiotherapist workflow
 
-1. Open the session log and select **Start exercise**.
-2. Choose an existing exercise or create one with the movement thresholds and
-   repetition goal you want to track.
-3. Connect the paired arm sensors, perform the movement and watch the raw angle
-   and repetition counter. Use the demonstration video if configured.
-4. End and save the session, then return to the log to review the recorded
-   exercise, repetitions and date.
-
-**Current record limits:** sessions share the prototype patient ID
-`patient_123`; there is no patient selection or separate patient history yet.
-Session records do not store angle, force or MMT position-capture attempts.
-Pending writes are not confirmed backups until the backend acknowledges them.
+1. **Select patient**: Choose a past patient, tap **New patient**, or open the **Overall record log**.
+2. **Choose section**: Select **Measure** or **Record log**.
+3. **Select body part**: Choose **Arm** to configure the upper-arm and forearm measurement.
+4. **Enter arm measurements**: Follow the illustrated diagram to key in **Circumference of bicep (cm)**, **Circumference of forearm (cm)**, and **Length of arm (cm)**.
+5. **Start measuring**: Tap **Start measuring** while the patient wears the sensors.
+6. **Record target position**: Ask the patient to perform the movement and tap **Record** at the desired position to capture **Angle (°)**, **Force (N)**, and **AI MMT grading**.
+7. **Record again**: Tap **Record again** if you want to record additional movement attempts.
+8. **Saved in record log**: Each recorded attempt is automatically stored in the record log with its attempt number, arm dimensions, angle, force, and AI MMT grade.
+9. **End-of-day reference**: Open the patient's **Record log** or the **Overall record log** at any time for clinical reference.
 
 ### Explore the screens without hardware
 
 The [synthetic browser preview](apps/medical_device_app/README.md#local-synthetic-preview)
-lets you explore the main screens without Firebase, BLE, AI, video playback or
-device notifications. Its sample records and local changes are temporary,
-not real patient data or phone/PC record synchronisation.
+lets you walk through all 9 steps in the browser without Firebase, physical BLE sensors, or external services.
 
 ## App screenshots
 
-These screenshots show **synthetic preview data**, not live sensor readings,
-real patient measurements, force calculations or MMT results. Select an image
-to open it at full size.
+Select any screenshot to view it at full size:
 
-| Session log | Exercise selection | Arm tracker |
+| 1. Select patient | 2. Measure or Record log | 4. Arm dimensions & diagram |
 | --- | --- | --- |
-| [<img src="docs/refinement/screenshots/home-mobile-after.png" alt="Session log with synthetic repetition totals, search and exercise filters" width="220">](docs/refinement/screenshots/home-mobile-after.png) | [<img src="docs/refinement/screenshots/exercises-mobile-after.png" alt="Exercise selection with sample elbow, wrist and shoulder movements" width="220">](docs/refinement/screenshots/exercises-mobile-after.png) | [<img src="docs/refinement/screenshots/tracker-mobile-after.png" alt="Arm tracker showing a synthetic pose, raw angle and repetition count" width="220">](docs/refinement/screenshots/tracker-mobile-after.png) |
+| [<img src="docs/refinement/screenshots/home-mobile-after.png" alt="Step 1 Select patient screen showing past patients, New patient button, and Overall record log" width="220">](docs/refinement/screenshots/home-mobile-after.png) | [<img src="docs/refinement/screenshots/exercises-mobile-after.png" alt="Step 2 Patient section screen with Section 1 Measure and Section 2 Record log" width="220">](docs/refinement/screenshots/exercises-mobile-after.png) | [<img src="docs/refinement/screenshots/add-mobile-after.png" alt="Step 4 Enter arm dimensions screen with illustrated guide showing 1 Bicep, 2 Forearm, and 3 Length of arm" width="220">](docs/refinement/screenshots/add-mobile-after.png) |
 
-| Add exercise | Goals and reminders | Report archive |
+| 5–6. Live arm measurement | 6–7. Recorded position & Record again | 8–9. Overall record log |
 | --- | --- | --- |
-| [<img src="docs/refinement/screenshots/add-mobile-after.png" alt="Exercise setup form for movement thresholds, repetition goals and video guidance" width="220">](docs/refinement/screenshots/add-mobile-after.png) | [<img src="docs/refinement/screenshots/goals-mobile-after.png" alt="Exercise goals and Android reminder settings in the synthetic preview" width="220">](docs/refinement/screenshots/goals-mobile-after.png) | [<img src="docs/refinement/screenshots/reports-mobile-after.png" alt="Report archive containing synthetic weekly report drafts" width="220">](docs/refinement/screenshots/reports-mobile-after.png) |
+| [<img src="docs/refinement/screenshots/tracker-mobile-after.png" alt="Steps 5 and 6 Arm measurement screen showing live Angle, Force, AI MMT grading, and Record button" width="220">](docs/refinement/screenshots/tracker-mobile-after.png) | [<img src="docs/refinement/screenshots/goals-mobile-after.png" alt="Steps 6 and 7 Recorded attempt card showing Recorded angle, Recorded force, Recorded AI MMT, and Record again button" width="220">](docs/refinement/screenshots/goals-mobile-after.png) | [<img src="docs/refinement/screenshots/reports-mobile-after.png" alt="Steps 8 and 9 Overall record log listing saved angle, force, and AI MMT records across patients" width="220">](docs/refinement/screenshots/reports-mobile-after.png) |
 
 ## Project layout
 

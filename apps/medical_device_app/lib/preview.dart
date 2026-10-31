@@ -7,6 +7,7 @@ import 'package:vector_math/vector_math_64.dart' as vector;
 import 'add_exercise.dart';
 import 'app_design.dart';
 import 'arm_tracker_view.dart';
+import 'clinical_workflow.dart';
 import 'dashboard.dart';
 import 'past_reports.dart';
 import 'prescriptions.dart';
@@ -28,6 +29,7 @@ class _KinetismPreviewAppState extends State<KinetismPreviewApp> {
   final _sessionChanges = StreamController<List<SessionLog>>.broadcast();
   final _goalChanges = StreamController<List<ExerciseGoal>>.broadcast();
   final _now = DateTime(2026, 10, 31, 12);
+  late final KinetismClinicalController _clinicalController;
   late final List<SessionLog> _logs;
   final _exercises = <ExerciseSummary>[
     const ExerciseSummary(
@@ -56,6 +58,7 @@ class _KinetismPreviewAppState extends State<KinetismPreviewApp> {
   @override
   void initState() {
     super.initState();
+    _clinicalController = KinetismClinicalController(isPreview: true);
     _logs = [
       _log(
         'demo-session-1',
@@ -118,6 +121,7 @@ class _KinetismPreviewAppState extends State<KinetismPreviewApp> {
 
   @override
   void dispose() {
+    _clinicalController.dispose();
     _exerciseChanges.close();
     _sessionChanges.close();
     _goalChanges.close();
@@ -131,22 +135,66 @@ class _KinetismPreviewAppState extends State<KinetismPreviewApp> {
     ).showSnackBar(SnackBar(content: Text(message)));
   }
 
+  void _handlePreviewRoute(String route) {
+    switch (route) {
+      case '/clinical/patients':
+        _clinicalController.goToStep(ClinicalStep.selectPatient);
+        _navigator.currentState!.pushNamed('/');
+      case '/clinical/hub':
+        if (_clinicalController.selectedPatient == null) {
+          _clinicalController.selectPatient(_clinicalController.patients.first);
+        } else {
+          _clinicalController.goToStep(ClinicalStep.patientHub);
+        }
+        _navigator.currentState!.pushNamed('/');
+      case '/clinical/body-part':
+        if (_clinicalController.selectedPatient == null) {
+          _clinicalController.selectPatient(_clinicalController.patients.first);
+        }
+        _clinicalController.openMeasureSection();
+        _navigator.currentState!.pushNamed('/');
+      case '/clinical/anthropometrics':
+        if (_clinicalController.selectedPatient == null) {
+          _clinicalController.selectPatient(_clinicalController.patients.first);
+        }
+        _clinicalController.selectBodyPart('Arm');
+        _navigator.currentState!.pushNamed('/');
+      case '/clinical/measure':
+        if (_clinicalController.selectedPatient == null) {
+          _clinicalController.selectPatient(_clinicalController.patients.first);
+        }
+        _clinicalController.goToStep(ClinicalStep.activeMeasurement);
+        _navigator.currentState!.pushNamed('/');
+      case '/clinical/patient-log':
+        if (_clinicalController.selectedPatient == null) {
+          _clinicalController.selectPatient(_clinicalController.patients.first);
+        }
+        _clinicalController.openPatientRecordLog();
+        _navigator.currentState!.pushNamed('/');
+      case '/clinical/overall-log':
+        _clinicalController.openOverallRecordLog();
+        _navigator.currentState!.pushNamed('/');
+      default:
+        _navigator.currentState!.pushNamed(route);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     const screens = <String, String>{
-      '/': 'Session log',
+      '/clinical/patients': '1. Select patient',
+      '/clinical/hub': '2. Measure or Record log',
+      '/clinical/body-part': '3. Select body part (Arm)',
+      '/clinical/anthropometrics': '4. Arm measurements & guide',
+      '/clinical/measure': '5–7. Measure & Record position',
+      '/clinical/patient-log': '8. Patient record log',
+      '/clinical/overall-log': '9. Overall record log',
+      '/legacy-sessions': 'Session log',
       '/exercises': 'Start exercise',
       '/add': 'Add exercise',
       '/tracker': 'Arm tracker',
       '/reports': 'Report archive',
       '/goals': 'Goals & reminders',
-      '/states/empty': 'Empty session log',
-      '/states/loading': 'Loading session log',
-      '/states/error': 'Failed session load',
-      '/states/cache': 'Cached session log',
-      '/states/pending': 'Pending upload',
-      '/exercises/error': 'Failed exercise load',
-      '/reports/error': 'Failed report load',
     };
     return MaterialApp(
       navigatorKey: _navigator,
@@ -154,7 +202,9 @@ class _KinetismPreviewAppState extends State<KinetismPreviewApp> {
       debugShowCheckedModeBanner: false,
       theme: KinetismTheme.dark,
       routes: _wrapRoutes({
-        '/': (context) => _home(context),
+        '/': (_) =>
+            KinetismClinicalFlowScreen(controller: _clinicalController),
+        '/legacy-sessions': (context) => _home(context),
         for (final state in ['empty', 'loading', 'error', 'cache', 'pending'])
           '/states/$state': (context) => _home(context, state: state),
         '/exercises': (context) => SelectExerciseScreen(
@@ -303,8 +353,7 @@ class _KinetismPreviewAppState extends State<KinetismPreviewApp> {
                       ),
                       PopupMenuButton<String>(
                         tooltip: 'Preview screens',
-                        onSelected: (route) =>
-                            _navigator.currentState!.pushNamed(route),
+                        onSelected: _handlePreviewRoute,
                         itemBuilder: (_) => screens.entries
                             .map(
                               (entry) => PopupMenuItem(

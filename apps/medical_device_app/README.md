@@ -108,8 +108,8 @@ until the backend acknowledges them.
 Run the refinement regressions together:
 
 ```powershell
-flutter test test\refinement_models_test.dart test\refinement_widgets_test.dart test\refinement_notices_test.dart test\refinement_error_layout_test.dart test\publishing_configuration_test.dart
-flutter analyze --no-pub --no-fatal-infos lib test\refinement_models_test.dart test\refinement_widgets_test.dart test\refinement_notices_test.dart test\refinement_error_layout_test.dart test\publishing_configuration_test.dart
+flutter test test\refinement_models_test.dart test\refinement_widgets_test.dart test\refinement_notices_test.dart test\refinement_error_layout_test.dart test\publishing_configuration_test.dart test\clinical_workflow_test.dart
+flutter analyze --no-pub --no-fatal-infos lib test\refinement_models_test.dart test\refinement_widgets_test.dart test\refinement_notices_test.dart test\refinement_error_layout_test.dart test\publishing_configuration_test.dart test\clinical_workflow_test.dart
 powershell -NoProfile -ExecutionPolicy Bypass -File tool\check_branding.ps1
 ```
 
@@ -157,9 +157,9 @@ generation are unconfigured in this public build.
 | Minimum Android | Android 7.0, API 24 |
 | Compile/target SDK | Android 16, API 36 |
 | Native runtimes | `arm64-v8a`, `armeabi-v7a`, `x86_64` |
-| Size | 193,364,032 bytes, 184.4 MiB |
+| Size | 193,444,998 bytes, 184.5 MiB |
 | Signing | Android Debug certificate; APK v2 signature verified |
-| SHA-256 | `ceeaf9b83a50d830a38f91989faa96ee8c4240696815c48c622cf045f7452464` |
+| SHA-256 | `652ca70a3f0ed621bf534ba67ea76457e2dc075bacbd08b2eaced4b37e0f7b28` |
 
 Manifest, runtime entries and signature checks passed. Physical installation,
 BLE operation, backend persistence and notification delivery were not tested.
