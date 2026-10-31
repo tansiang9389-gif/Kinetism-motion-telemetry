@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "508211917115",
+    "project_id": "armtracker-84a82",
+    "storage_bucket": "armtracker-84a82.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:508211917115:android:ffa7958d71e029688ec71e",
+        "android_client_info": {
+          "package_name": "com.example.medical_device_app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDNJ_3ZEmd-OY0ZjYQd1gfk-WbeGWnjrA4"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

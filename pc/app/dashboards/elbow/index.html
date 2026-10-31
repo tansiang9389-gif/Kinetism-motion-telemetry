@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Kinetism Motion Dashboard</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <main>
+    <header>
+      <div>
+        <p class="eyebrow">Right arm · One forearm IMU</p>
+        <h1>Elbow Flexion Dashboard</h1>
+      </div>
+      <span id="connection" class="status offline">Waiting for sensor</span>
+    </header>
+
+    <section class="metric-grid">
+      <article class="metric accent">
+        <span>Right elbow flexion</span>
+        <strong><b id="elbowAngle">0.0</b>°</strong>
+      </article>
+      <article class="metric">
+        <span>Peak estimated inertial force</span>
+        <strong><b id="forceNewton">0.0</b> N</strong>
+      </article>
+      <article class="metric">
+        <span>Maximum flexion</span>
+        <strong><b id="maxFlexion">0.0</b>°</strong>
+      </article>
+      <article class="metric">
+        <span>Session ROM</span>
+        <strong><b id="rangeOfMotion">0.0</b>°</strong>
+      </article>
+      <article class="metric">
+        <span>Motion state</span>
+        <strong id="motion">Stationary</strong>
+      </article>
+    </section>
+
+    <section class="content-grid">
+      <article class="panel arm-panel">
+        <div class="panel-title">
+          <div>
+            <p class="eyebrow">Right arm · Sagittal view</p>
+            <h2>One-joint model</h2>
+          </div>
+          <div class="panel-actions">
+            <button id="resetForceButton">Reset force peak</button>
+            <button id="zeroButton">Set full extension (0°)</button>
+          </div>
+        </div>
+        <div class="arm-stage">
+          <svg id="armModel" viewBox="0 0 360 390" role="img" aria-label="Right arm elbow model">
+            <path class="torso" d="M72 45 Q118 23 164 45 L183 185 L52 185 Z"/>
+            <circle class="head" cx="118" cy="35" r="25"/>
+            <line class="upper-arm limb" x1="166" y1="75" x2="198" y2="205"/>
+            <line id="forearm" class="forearm limb" x1="198" y1="205" x2="198" y2="337"/>
+            <circle class="joint shoulder" cx="166" cy="75" r="10"/>
+            <circle class="joint elbow" cx="198" cy="205" r="11"/>
+            <circle id="wrist" class="joint wrist" cx="198" cy="337" r="8"/>
+            <path id="angleArc" class="angle-arc" d=""/>
+            <text id="angleLabel" class="angle-label" x="220" y="240">0.0°</text>
+            <text class="side-label" x="20" y="370">RIGHT</text>
+            <g id="imuMarker" class="imu-marker" transform="translate(198 271)">
+              <rect x="-19" y="-11" width="38" height="22" rx="4"/>
+              <path d="M-11 0 H12 M7 -5 L12 0 L7 5"/>
+              <text x="0" y="-16">IMU +X</text>
+            </g>
+          </svg>
+        </div>
+        <div class="force-settings">
+          <label>
+            Forearm + hand mass
+            <span><input id="armMass" type="number" min="0.1" max="20" step="0.1" value="1.5"> kg</span>
+          </label>
+          <label>
+            Force refresh threshold
+            <span><input id="forceThreshold" type="number" min="0.1" max="100" step="0.1" value="1.0"> N</span>
+          </label>
+        </div>
+        <p class="mount-note">Keep the upper arm still. Mount the IMU on the right forearm with +X pointing toward the wrist.</p>
+      </article>
+
+      <article class="panel">
+        <p class="eyebrow">Elbow flexion / extension</p>
+        <h2>Angle over the last 10 seconds</h2>
+        <canvas id="chart" width="900" height="360"></canvas>
+        <div class="legend">
+          <span class="angle-series">Right elbow angle</span>
+          <span class="chart-range">Scale: 0–160°</span>
+        </div>
+      </article>
+    </section>
+
+    <section class="panel diagnostics">
+      <div><span>Battery</span><strong id="battery">--</strong></div>
+      <div><span>Sensor rate</span><strong id="sampleRate">--</strong></div>
+      <div><span>Packets received</span><strong id="packets">0</strong></div>
+      <div><span>Sequence gaps</span><strong id="lost">0</strong></div>
+      <div><span>Accuracy</span><strong id="accuracy">--</strong></div>
+      <div><span>Acceleration</span><strong id="intensity">--</strong></div>
+    </section>
+
+    <p class="notice">Peak force is held until reset. It is an inertial estimate (F = m × a), not muscle, joint, or contact force.</p>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <title>Kinetism paired-sensor K</title>
+  <rect width="1024" height="1024" fill="#101B22"/>
+  <line x1="336" y1="280" x2="336" y2="744" stroke="#57DBC4" stroke-width="76" stroke-linecap="round"/>
+  <line x1="336" y1="512" x2="672" y2="288" stroke="#57DBC4" stroke-width="76" stroke-linecap="round"/>
+  <line x1="336" y1="512" x2="672" y2="736" stroke="#57DBC4" stroke-width="76" stroke-linecap="round"/>
+  <circle cx="672" cy="288" r="52" fill="#57DBC4"/>
+  <circle cx="672" cy="736" r="52" fill="#57DBC4"/>
+  <circle cx="672" cy="288" r="20" fill="#101B22"/>
+  <circle cx="672" cy="736" r="20" fill="#101B22"/>
+</svg>

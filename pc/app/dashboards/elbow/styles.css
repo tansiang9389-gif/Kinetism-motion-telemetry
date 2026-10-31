@@ -1,0 +1,68 @@
+:root {
+  color-scheme: dark;
+  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+  background: #0a0d12;
+  color: #edf3f8;
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; min-height: 100vh; background: radial-gradient(circle at 15% 0%, #142333, #0a0d12 42%); }
+main { width: min(1400px, 94vw); margin: 0 auto; padding: 32px 0; }
+header, .panel-title { display: flex; align-items: center; justify-content: space-between; gap: 20px; }
+h1, h2, p { margin: 0; }
+h1 { font-size: clamp(2rem, 4vw, 4rem); letter-spacing: -0.05em; }
+h2 { font-size: 1.25rem; margin-top: 4px; }
+.eyebrow { color: #7f94a8; font-size: .75rem; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; }
+.status { border: 1px solid #394552; border-radius: 999px; padding: 10px 16px; font-weight: 700; }
+.status.online { border-color: #38d996; color: #38d996; }
+.status.offline { color: #ff6e6e; }
+.metric-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 14px; margin: 30px 0 14px; }
+.metric, .panel { background: rgba(19, 25, 33, .88); border: 1px solid #283340; border-radius: 18px; padding: 22px; box-shadow: 0 18px 50px rgba(0,0,0,.22); }
+.metric span, .diagnostics span { color: #8495a7; display: block; font-size: .8rem; margin-bottom: 8px; text-transform: uppercase; }
+.metric strong { font-size: clamp(1.4rem, 2.5vw, 2.4rem); }
+.metric.accent { background: linear-gradient(135deg, #152d31, #122321); border-color: #286153; }
+.metric.moving { background: linear-gradient(135deg, #3b2511, #26190e); border-color: #e8953f; }
+.content-grid { display: grid; grid-template-columns: minmax(320px, .7fr) minmax(520px, 1.3fr); gap: 14px; }
+.arm-stage { min-height: 390px; display: grid; place-items: center; }
+#armModel { width: min(100%, 390px); height: 390px; overflow: visible; }
+.torso { fill: #26323e; stroke: #607386; stroke-width: 4; }
+.head { fill: #344351; stroke: #71869a; stroke-width: 4; }
+.limb { stroke: #d8e0e7; stroke-width: 24; stroke-linecap: round; }
+.forearm { stroke: #4ce0ad; transition: x2 70ms linear, y2 70ms linear; }
+.joint { fill: #10161d; stroke-width: 5; }
+.shoulder { stroke: #8ea0af; }
+.elbow { stroke: #ff9f43; }
+.wrist { stroke: #4ce0ad; transition: cx 70ms linear, cy 70ms linear; }
+.angle-arc { fill: none; stroke: #ff9f43; stroke-width: 5; }
+.angle-label { fill: #ffbd7a; font-size: 25px; font-weight: 800; }
+.side-label { fill: #627588; font-size: 16px; font-weight: 800; letter-spacing: .25em; }
+.imu-marker rect { fill: #162b27; stroke: #4ce0ad; stroke-width: 3; }
+.imu-marker path { fill: none; stroke: #4ce0ad; stroke-width: 3; }
+.imu-marker text { fill: #4ce0ad; font-size: 12px; font-weight: 800; text-anchor: middle; }
+.mount-note { color: #8fa0b0; font-size: .82rem; line-height: 1.5; text-align: center; }
+.force-settings { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 0 0 14px; }
+.force-settings label { color: #8495a7; font-size: .72rem; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; }
+.force-settings label span { align-items: center; color: #cdd8e2; display: flex; gap: 6px; margin-top: 7px; text-transform: none; }
+.force-settings input { background: #0c1117; border: 1px solid #405162; border-radius: 8px; color: #edf3f8; font: inherit; padding: 8px; width: 100%; }
+button { appearance: none; background: #23313f; color: white; border: 1px solid #405162; border-radius: 10px; padding: 10px 14px; cursor: pointer; }
+button:hover { background: #2e4255; }
+.panel-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
+canvas { display: block; width: 100%; height: 300px; margin-top: 18px; background: #0c1117; border-radius: 12px; }
+.legend { display: flex; gap: 18px; margin-top: 12px; font-size: .8rem; font-weight: 800; }
+.angle-series { color: #4ce0ad; }
+.chart-range { color: #7f94a8; margin-left: auto; }
+.diagnostics { display: grid; grid-template-columns: repeat(6, 1fr); gap: 18px; margin-top: 14px; }
+.diagnostics strong { font-size: 1.15rem; }
+.notice { color: #8090a1; font-size: .82rem; margin-top: 14px; text-align: center; }
+@media (max-width: 900px) {
+  .metric-grid { grid-template-columns: repeat(2, 1fr); }
+  .content-grid { grid-template-columns: 1fr; }
+  .diagnostics { grid-template-columns: repeat(3, 1fr); }
+}
+@media (max-width: 560px) {
+  header { align-items: flex-start; flex-direction: column; }
+  .metric-grid, .diagnostics { grid-template-columns: 1fr 1fr; }
+  .force-settings { grid-template-columns: 1fr; }
+  .panel-title { align-items: flex-start; flex-direction: column; }
+  .panel-actions { justify-content: flex-start; }
+}

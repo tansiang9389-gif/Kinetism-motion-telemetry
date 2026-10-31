@@ -1,8 +1,56 @@
 # Kinetism
 
-ESP32-C3/BNO080 motion telemetry over Wi-Fi with a local browser dashboard.
+ESP32-C3/BNO080 motion telemetry, a local PC dashboard, and the refined
+Flutter rehabilitation prototype. This is development software, not a
+clinically validated medical device.
 
-## What it measures
+## Download the Android prototype
+
+[Download Kinetism for Android](https://github.com/tansiang9389-gif/Kinetism-motion-telemetry/releases/download/prototype-refinement-20261031/kinetism-prototype-1.0.0-debug.apk)
+or open the [development release](https://github.com/tansiang9389-gif/Kinetism-motion-telemetry/releases/tag/prototype-refinement-20261031).
+
+Android 7.0 or newer is required. The APK is debug-signed and intended for a
+dedicated test phone, not clinical use. AI coaching and new AI report generation
+are unconfigured in the public build; no private provider key is bundled.
+Firebase client configuration is retained, but backend rules, persistence,
+physical sensors and notifications have not been validated.
+
+Patient selection, illustrated arm measurements, calibrated force, MMT position
+capture and authenticated phone/PC patient-record sync are not implemented.
+See the [app documentation](apps/medical_device_app/README.md) for the exact
+feature boundaries, installation details and verified APK checksum.
+
+## Project layout
+
+| Folder | Purpose |
+| --- | --- |
+| [src](src) and [include](include) | Wi-Fi/UDP ESP32-C3 firmware and a non-secret configuration template |
+| [pc](pc) | Local Python telemetry receiver and both browser dashboards |
+| [tests](tests) | PC protocol regressions and saved paired-sensor Arduino reference sketches |
+| [apps/medical_device_app](apps/medical_device_app) | Refined Flutter source, native projects, tests and editable branding |
+| [docs/refinement](docs/refinement/design-audit-kinetism.md) | Refinement review, synthetic browser evidence and screenshots |
+
+The original upload ZIP is retained as a sanitised **source-only** archive.
+Configured Wi-Fi credentials and compiled/cache files have been removed from
+that public copy. Original local files and Git history were not rewritten.
+Rotate any real Wi-Fi credentials previously present in the archive and revoke
+the former embedded AI API key; removing a current file does not erase history.
+
+### Sensor integration boundaries
+
+The [saved BLE master sketch](tests/master_1_1_1_1.ino) advertises `Physio_A`
+and sends the eight quaternion CSV fields expected by the Flutter app.
+The [saved ESP-NOW slave sketch](tests/C3_MS4_Slave__1___1_1.ino) is its reference
+companion. These sketches were retained as supplied, not built or flashed during
+this refinement; the slave reference lacks its BNO080 library header and needs
+Arduino/library setup before it can be treated as a buildable firmware project.
+
+The root PlatformIO project instead builds the **Wi-Fi/UDP** firmware used by
+the PC dashboard. Its binary UDP packets are not the Flutter BLE payload.
+Do not flash that firmware expecting the phone's BLE tracker to read it.
+The synthetic browser preview is not a synchronised clinical PC portal.
+
+## What the Wi-Fi prototype measures
 
 - Fused relative orientation from the BNO080 game rotation vector
 - Gravity-free linear acceleration on X/Y/Z
@@ -30,7 +78,7 @@ result unreliable.
 
 The BNO080 address is `0x4B`.
 
-## Configure
+## Configure the Wi-Fi firmware
 
 1. Copy `include/secrets.example.h` to `include/secrets.h`.
 2. Set the 2.4 GHz Wi-Fi SSID and password.
@@ -52,8 +100,8 @@ pio device monitor --port COM3 --baud 115200
 ```
 
 Confirm COM3 is still the ESP32-C3 before uploading. Uploading replaces the
-currently installed ESP-NOW slave firmware; the original sketch remains in the
-Downloads folder.
+currently installed ESP-NOW firmware. The saved reference sketches remain in
+[tests](tests), but they are not selected by this PlatformIO build.
 
 ## Run the dashboard
 

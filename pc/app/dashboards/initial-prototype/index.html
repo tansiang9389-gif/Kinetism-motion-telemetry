@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Kinetism Initial Prototype</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <main>
+    <header>
+      <div>
+        <p class="eyebrow">ESP32-C3 / BNO080</p>
+        <h1>Arm Motion Dashboard</h1>
+      </div>
+      <span id="connection" class="status offline">Waiting for sensor</span>
+    </header>
+
+    <section class="metric-grid">
+      <article class="metric accent">
+        <span>Motion</span>
+        <strong id="motion">Stationary</strong>
+      </article>
+      <article class="metric">
+        <span>Current intensity</span>
+        <strong><b id="magnitude">0.000</b> g</strong>
+      </article>
+      <article class="metric">
+        <span>Current swing peak</span>
+        <strong><b id="currentPeak">0.000</b> g</strong>
+      </article>
+      <article class="metric">
+        <span>Last swing peak</span>
+        <strong><b id="lastPeak">0.000</b> g</strong>
+      </article>
+    </section>
+
+    <section class="content-grid">
+      <article class="panel orientation-panel">
+        <div class="panel-title">
+          <div>
+            <p class="eyebrow">Relative orientation</p>
+            <h2>Sensor pose</h2>
+          </div>
+          <button id="zeroButton">Zero orientation</button>
+        </div>
+        <div class="stage">
+          <div id="sensorModel" class="sensor-model">
+            <span>TOP</span>
+          </div>
+        </div>
+      </article>
+
+      <article class="panel">
+        <p class="eyebrow">Linear acceleration</p>
+        <h2>Rolling 5-second trace</h2>
+        <canvas id="chart" width="900" height="360"></canvas>
+        <div class="legend">
+          <span class="axis-x">X</span>
+          <span class="axis-y">Y</span>
+          <span class="axis-z">Z</span>
+          <span class="axis-m">Magnitude</span>
+        </div>
+      </article>
+    </section>
+
+    <section class="panel diagnostics">
+      <div><span>Battery</span><strong id="battery">--</strong></div>
+      <div><span>Sensor rate</span><strong id="sampleRate">--</strong></div>
+      <div><span>Packets received</span><strong id="packets">0</strong></div>
+      <div><span>Sequence gaps</span><strong id="lost">0</strong></div>
+      <div><span>Accuracy</span><strong id="accuracy">--</strong></div>
+      <div><span>Noise floor</span><strong id="noise">--</strong></div>
+    </section>
+
+    <p class="notice">Intensity is gravity-free linear acceleration measured in g. It is not force in newtons.</p>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>
+

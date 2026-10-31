@@ -4,4 +4,14 @@ __pycache__/
 *.py[cod]
 .venv/
 include/secrets.h
-
+.env
+.env.*
+!.env.example
+local.env.json
+*.apk
+*.aab
+*.jks
+*.keystore
+*.p12
+**/key.properties
+**/*service-account*.json

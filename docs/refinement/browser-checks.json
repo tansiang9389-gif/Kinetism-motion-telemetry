@@ -1,0 +1,127 @@
+{
+  "captures": [
+    {
+      "page": "home",
+      "size": "desktop",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "page": "home",
+      "size": "mobile",
+      "width": 375,
+      "height": 812
+    },
+    {
+      "page": "home",
+      "size": "tablet",
+      "width": 768,
+      "height": 1024
+    },
+    {
+      "page": "exercises",
+      "size": "desktop",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "page": "exercises",
+      "size": "mobile",
+      "width": 375,
+      "height": 812
+    },
+    {
+      "page": "exercises",
+      "size": "tablet",
+      "width": 768,
+      "height": 1024
+    },
+    {
+      "page": "add",
+      "size": "desktop",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "page": "add",
+      "size": "mobile",
+      "width": 375,
+      "height": 812
+    },
+    {
+      "page": "add",
+      "size": "tablet",
+      "width": 768,
+      "height": 1024
+    },
+    {
+      "page": "tracker",
+      "size": "desktop",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "page": "tracker",
+      "size": "mobile",
+      "width": 375,
+      "height": 812
+    },
+    {
+      "page": "tracker",
+      "size": "tablet",
+      "width": 768,
+      "height": 1024
+    },
+    {
+      "page": "reports",
+      "size": "desktop",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "page": "reports",
+      "size": "mobile",
+      "width": 375,
+      "height": 812
+    },
+    {
+      "page": "reports",
+      "size": "tablet",
+      "width": 768,
+      "height": 1024
+    },
+    {
+      "page": "goals",
+      "size": "desktop",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "page": "goals",
+      "size": "mobile",
+      "width": 375,
+      "height": 812
+    },
+    {
+      "page": "goals",
+      "size": "tablet",
+      "width": 768,
+      "height": 1024
+    }
+  ],
+  "flows": [
+    "Case-insensitive session search, exact record details and search clearing",
+    "Invalid recipe rejected, corrected recipe saved to temporary preview data and selected list updated",
+    "Named synthetic reminder toggled; invalid goal rejected and corrected goal reflected in the list"
+  ],
+  "wordCounts": {
+    "home": 137,
+    "exercises": 35,
+    "add": 27,
+    "tracker": 67,
+    "reports": 39,
+    "goals": 36
+  },
+  "errors": [],
+  "externalRequests": []
+}
