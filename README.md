@@ -62,6 +62,20 @@ lets you explore the main screens without Firebase, BLE, AI, video playback or
 device notifications. Its sample records and local changes are temporary,
 not real patient data or phone/PC record synchronisation.
 
+## App screenshots
+
+These screenshots show **synthetic preview data**, not live sensor readings,
+real patient measurements, force calculations or MMT results. Select an image
+to open it at full size.
+
+| Session log | Exercise selection | Arm tracker |
+| --- | --- | --- |
+| [<img src="docs/refinement/screenshots/home-mobile-after.png" alt="Session log with synthetic repetition totals, search and exercise filters" width="220">](docs/refinement/screenshots/home-mobile-after.png) | [<img src="docs/refinement/screenshots/exercises-mobile-after.png" alt="Exercise selection with sample elbow, wrist and shoulder movements" width="220">](docs/refinement/screenshots/exercises-mobile-after.png) | [<img src="docs/refinement/screenshots/tracker-mobile-after.png" alt="Arm tracker showing a synthetic pose, raw angle and repetition count" width="220">](docs/refinement/screenshots/tracker-mobile-after.png) |
+
+| Add exercise | Goals and reminders | Report archive |
+| --- | --- | --- |
+| [<img src="docs/refinement/screenshots/add-mobile-after.png" alt="Exercise setup form for movement thresholds, repetition goals and video guidance" width="220">](docs/refinement/screenshots/add-mobile-after.png) | [<img src="docs/refinement/screenshots/goals-mobile-after.png" alt="Exercise goals and Android reminder settings in the synthetic preview" width="220">](docs/refinement/screenshots/goals-mobile-after.png) | [<img src="docs/refinement/screenshots/reports-mobile-after.png" alt="Report archive containing synthetic weekly report drafts" width="220">](docs/refinement/screenshots/reports-mobile-after.png) |
+
 ## Project layout
 
 | Folder | Purpose |
