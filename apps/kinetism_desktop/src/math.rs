@@ -242,4 +242,79 @@ mod tests {
         assert!((wrap_angle(3.0 * std::f64::consts::PI) - std::f64::consts::PI).abs() < 1e-9);
         assert!((wrap_angle(-FRAC_PI_2 - std::f64::consts::TAU) + FRAC_PI_2).abs() < 1e-9);
     }
+
+    #[test]
+    fn zero_length_inputs_fall_back_instead_of_producing_nan() {
+        for v in [Vec3::ZERO, Vec3::new(1e-12, 0.0, -1e-12)] {
+            assert_eq!(v.normalized(), None, "{v:?} has no direction");
+        }
+        assert_eq!(Vec3::new(f64::INFINITY, 0.0, 0.0).normalized(), None);
+        assert_eq!(Vec3::ZERO.angle_to(Vec3::X), 0.0, "not NaN");
+        assert_eq!(Vec3::Y.angle_to(Vec3::ZERO), 0.0, "not NaN");
+        assert_eq!(
+            Quat::new(0.0, 0.0, 0.0, 0.0).normalized(),
+            None,
+            "an all-zero quaternion means the sensor has not reported"
+        );
+
+        let q = Quat::from_axis_angle(Vec3::ZERO, FRAC_PI_2);
+        assert_eq!(
+            q,
+            Quat::from_axis_angle(Vec3::Z, FRAC_PI_2),
+            "a zero axis falls back to world up"
+        );
+        assert!((q.norm() - 1.0).abs() < 1e-12, "{q:?}");
+        assert!(close(q.rotate(Vec3::X), Vec3::Y));
+    }
+
+    #[test]
+    fn opposite_or_zero_vectors_still_give_a_unit_rotation() {
+        // Parallel to X, so the usual X-cross axis is zero and the Y fallback is used.
+        for (from, to) in [
+            (Vec3::X, -Vec3::X),
+            (-Vec3::X, Vec3::X),
+            (Vec3::X.scale(2.5), Vec3::X.scale(-0.4)),
+        ] {
+            let q = Quat::from_two_vectors(from, to);
+            assert!((q.norm() - 1.0).abs() < 1e-12, "{from:?} -> {to:?}: {q:?}");
+            assert!(
+                close(
+                    q.rotate(from.normalized().unwrap()),
+                    to.normalized().unwrap()
+                ),
+                "{from:?} -> {to:?}: {q:?}"
+            );
+        }
+
+        // A zero vector falls back to X.
+        assert_eq!(Quat::from_two_vectors(Vec3::ZERO, Vec3::X), Quat::IDENTITY);
+        assert_eq!(
+            Quat::from_two_vectors(Vec3::Y, Vec3::ZERO),
+            Quat::from_two_vectors(Vec3::Y, Vec3::X)
+        );
+        let q = Quat::from_two_vectors(Vec3::ZERO, -Vec3::X);
+        assert!((q.norm() - 1.0).abs() < 1e-12, "{q:?}");
+        assert!(close(q.rotate(Vec3::X), -Vec3::X));
+    }
+
+    #[test]
+    fn vertical_vectors_have_no_heading() {
+        assert_eq!(horizontal_heading(Vec3::Z, 0.2), None, "arm straight up");
+        assert_eq!(
+            horizontal_heading(Vec3::DOWN, 0.2),
+            None,
+            "arm hanging down"
+        );
+        assert_eq!(
+            horizontal_heading(Vec3::new(0.1, -0.1, -0.98), 0.2),
+            None,
+            "too little horizontal component to trust"
+        );
+        assert_eq!(horizontal_heading(Vec3::ZERO, 0.2), None);
+        let at_threshold = horizontal_heading(Vec3::new(0.0, 0.5, -0.8), 0.5)
+            .expect("a projection exactly at the threshold has a heading");
+        assert!((at_threshold - FRAC_PI_2).abs() < 1e-12);
+        let toward_minus_x = horizontal_heading(Vec3::new(-1.0, 0.0, 0.3), 0.2).unwrap();
+        assert!((toward_minus_x - std::f64::consts::PI).abs() < 1e-12);
+    }
 }

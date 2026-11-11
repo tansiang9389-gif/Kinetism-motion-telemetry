@@ -93,3 +93,30 @@ pub fn apply(ctx: &egui::Context) {
         .into();
     });
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn hue_degrees(c: Color32) -> f64 {
+        let (r, g, b) = (f64::from(c.r()), f64::from(c.g()), f64::from(c.b()));
+        (3f64.sqrt() * (g - b)).atan2(2.0 * r - g - b).to_degrees()
+    }
+
+    #[test]
+    fn grade_colours_run_from_red_to_green_and_clamp_above_five() {
+        let hues: Vec<f64> = (0..=5).map(|g| hue_degrees(grade_color(g))).collect();
+        assert!(
+            hues.windows(2).all(|w| w[0] < w[1]),
+            "each grade is a step from red towards green: {hues:?}"
+        );
+        assert!(hues[0].abs() < 10.0, "grade 0 is red: {hues:?}");
+        assert!(
+            (100.0..=140.0).contains(&hues[5]),
+            "grade 5 is green: {hues:?}"
+        );
+        for grade in [6, 9, u8::MAX] {
+            assert_eq!(grade_color(grade), grade_color(5), "grade {grade}");
+        }
+    }
+}

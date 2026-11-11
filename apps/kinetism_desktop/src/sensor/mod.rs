@@ -305,6 +305,32 @@ mod tests {
     }
 
     #[test]
+    fn a_task_that_panics_holding_the_lock_does_not_take_the_link_down() {
+        let shared = Arc::new(Mutex::new(Shared::new()));
+        let task = shared.clone();
+        let crashed = std::thread::spawn(move || {
+            with(&task, |s| {
+                s.reset(Source::Wifi, LinkState::Listening("UDP 4210".into()));
+                panic!("simulated sensor task crash while holding the lock");
+            })
+        })
+        .join();
+        assert!(crashed.is_err(), "the sensor task panicked");
+        assert!(shared.is_poisoned(), "the panic poisoned the mutex");
+        assert_eq!(
+            with(&shared, |s| s.state().clone()),
+            LinkState::Listening("UDP 4210".into()),
+            "the state written before the panic is still readable"
+        );
+        with(&shared, |s| s.push(Source::Wifi, frame()));
+        assert_eq!(
+            with(&shared, |s| (s.queue.len(), s.stats.packets)),
+            (1, 1),
+            "frames keep flowing through the poisoned lock"
+        );
+    }
+
+    #[test]
     fn parses_source_names() {
         assert_eq!(Source::from_key("WiFi"), Some(Source::Wifi));
         assert_eq!(Source::from_key("ble"), Some(Source::Bluetooth));

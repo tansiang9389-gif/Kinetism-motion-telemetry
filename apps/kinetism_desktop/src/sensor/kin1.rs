@@ -177,4 +177,39 @@ mod tests {
             Err(Kin1Error::BadQuaternion)
         );
     }
+
+    #[test]
+    fn rejected_packet_reasons_name_the_bad_field_and_value() {
+        // Each reason is kept as `LinkStats::last_invalid` for diagnosing a bad link.
+        let good = live();
+        let reason = |offset: usize, bytes: &[u8]| {
+            let mut d = good.clone();
+            d[offset..offset + bytes.len()].copy_from_slice(bytes);
+            parse(&d).unwrap_err().to_string()
+        };
+        assert_eq!(
+            parse(&good[..63]).unwrap_err().to_string(),
+            "expected 64 bytes, got 63"
+        );
+        assert_eq!(reason(0, b"KIN2"), "invalid magic 0x324e494b");
+        assert_eq!(
+            reason(0, &[0xab, 0, 0, 0]),
+            "invalid magic 0x000000ab",
+            "the magic is shown as zero-padded hex"
+        );
+        assert_eq!(reason(4, &[2]), "unsupported protocol version 2");
+        assert_eq!(reason(6, &[60, 0]), "declared packet size 60 is invalid");
+        assert_eq!(reason(58, &[1, 0]), "reserved field must be zero");
+        assert_eq!(
+            reason(60, &f32::INFINITY.to_le_bytes()),
+            "packet contains a non-finite value",
+            "a broken sample rate is rejected like a broken quaternion"
+        );
+        assert_eq!(reason(56, &[101]), "invalid battery percentage 101");
+        assert_eq!(reason(5, &[6]), "sensor reports its IMU is not ready");
+        assert_eq!(
+            reason(16, &2.0f32.to_le_bytes()),
+            "quaternion is not unit length"
+        );
+    }
 }

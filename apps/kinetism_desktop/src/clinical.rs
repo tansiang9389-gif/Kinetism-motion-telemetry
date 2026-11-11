@@ -711,4 +711,98 @@ mod tests {
         assert_eq!(guideline(9).next_goal, guideline(5).next_goal);
         assert_eq!(guideline(0).focus, "Elicit a first contraction");
     }
+
+    #[test]
+    fn a_zero_size_arm_still_gets_finite_load_estimates() {
+        // `validate` blocks this in the form, but a synced phone record can carry zeros.
+        let zero = Anthropometrics {
+            bicep_cm: 0.0,
+            forearm_cm: 0.0,
+            arm_length_cm: 55.0,
+        };
+        assert_eq!(zero.total_arm_mass_kg(), 0.0);
+        assert_eq!(
+            zero.effective_moving_mass_kg(),
+            1.2,
+            "falls back to a typical forearm-and-hand mass"
+        );
+        let rad = 90.0f64.to_radians();
+        assert_eq!(
+            zero.elbow_force_newtons(90.0, 0.0),
+            round1(
+                1.2 * STANDARD_GRAVITY * (0.55 + 0.45 * rad.sin()) * (1.0 + 0.38 * (90.0 / 145.0))
+            ),
+            "the elbow model runs on the fallback mass"
+        );
+        let with_motion = zero.elbow_force_newtons(120.0, PHONE_APP_DEFAULT_ACCEL_G);
+        assert!(
+            with_motion.is_finite() && with_motion > 0.0,
+            "{with_motion}"
+        );
+        let baseline = 1.2 * STANDARD_GRAVITY;
+        assert_eq!(grade_elbow_flexion(140.0, baseline * 0.5, &zero).grade, 2);
+        assert_eq!(grade_elbow_flexion(140.0, baseline * 2.0, &zero).grade, 5);
+        assert_eq!(
+            zero.shoulder_load_newtons(90.0),
+            0.0,
+            "no arm volume, no shoulder load"
+        );
+        assert_eq!(zero.shoulder_torque_nm(90.0), 0.0);
+
+        let tiny = Anthropometrics {
+            bicep_cm: 1.0,
+            forearm_cm: 1.0,
+            arm_length_cm: 15.0,
+        };
+        assert_eq!(tiny.effective_moving_mass_kg(), 0.25, "lower clamp");
+        let huge = Anthropometrics {
+            bicep_cm: 200.0,
+            forearm_cm: 200.0,
+            arm_length_cm: 200.0,
+        };
+        assert_eq!(huge.effective_moving_mass_kg(), 8.0, "upper clamp");
+    }
+
+    #[test]
+    fn guidelines_for_grades_one_to_four_aim_at_the_next_grade() {
+        for (grade, activity, message) in [
+            (1, "Gravity-minimised slides", "Slide your arm"),
+            (2, "Game Level 0 - draw the apple", "Draw apples"),
+            (3, "Game Levels 1-2 - PNF D1 and D2", "Slice the fruit"),
+            (4, "Light resistance band", "daily practice"),
+        ] {
+            let g = guideline(grade);
+            assert!(!g.focus.is_empty(), "grade {grade}");
+            assert!(
+                !g.activities.is_empty() && g.activities.iter().all(|a| !a.is_empty()),
+                "grade {grade}"
+            );
+            assert!(
+                g.activities.iter().any(|a| a.contains(activity)),
+                "grade {grade} should suggest {activity:?}: {:?}",
+                g.activities
+            );
+            assert!(
+                g.patient_message.contains(message),
+                "grade {grade}: {}",
+                g.patient_message
+            );
+            assert!(
+                g.next_goal.starts_with(&format!("Grade {}:", grade + 1)),
+                "grade {grade} aims at the next grade: {}",
+                g.next_goal
+            );
+        }
+        assert!(
+            guideline(2)
+                .activities
+                .iter()
+                .any(|a| a.contains(&format!("{} apples", crate::game::APPLES_PER_ROUND))),
+            "the grade-2 plan matches the apples in one Level 0 round"
+        );
+        for grade in [6, u8::MAX] {
+            assert_eq!(guideline(grade).focus, guideline(5).focus, "grade {grade}");
+            assert_eq!(mmt_title(grade), "Normal", "grade {grade}");
+        }
+    }
 }

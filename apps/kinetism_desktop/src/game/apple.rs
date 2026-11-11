@@ -204,4 +204,40 @@ mod tests {
         assert!(t.accuracy() < 0.1);
         assert!(t.score() < 0.1);
     }
+
+    #[test]
+    fn slow_tracing_costs_at_most_half_the_time_bonus_after_thirty_seconds() {
+        let trace = |dt: f64| {
+            let mut t = AppleTracer::new(apple_path([0.5, -0.5], 0.25));
+            for p in t.path.points.clone() {
+                t.update(p, dt);
+            }
+            assert!(t.done && t.coverage() == 1.0 && t.accuracy() == 1.0);
+            t
+        };
+        let quick = trace(0.1);
+        assert!(quick.elapsed <= 30.0, "{}", quick.elapsed);
+        assert!((quick.score() - 1.0).abs() < 1e-12, "{}", quick.score());
+        let slow = trace(2.0);
+        assert!(
+            slow.elapsed >= 90.0,
+            "past the time floor: {}",
+            slow.elapsed
+        );
+        assert!((slow.score() - 0.925).abs() < 1e-12, "{}", slow.score());
+        assert!(
+            slow.score() >= 0.9,
+            "a perfect but slow apple still counts as clean"
+        );
+
+        let mut t = quick;
+        for (elapsed, score) in [(30.0, 1.0), (60.0, 0.9625), (90.0, 0.925), (600.0, 0.925)] {
+            t.elapsed = elapsed;
+            assert!(
+                (t.score() - score).abs() < 1e-12,
+                "after {elapsed} s: {}",
+                t.score()
+            );
+        }
+    }
 }

@@ -112,6 +112,27 @@ mod tests {
     }
 
     #[test]
+    fn invalid_packet_reasons_read_as_plain_sentences() {
+        // Each reason is kept as `LinkStats::last_invalid` for diagnosing a bad link.
+        let reason = |bytes: &[u8]| parse_frame(bytes).unwrap_err().to_string();
+        assert_eq!(reason(&[0xff, 0xfe]), "packet is not UTF-8 text");
+        assert_eq!(reason(b"1,2,3"), "expected 8 values, got 3");
+        assert_eq!(
+            reason(b"0,0,0,1,0,0,0,x"),
+            "value 8 is not a finite number",
+            "values are counted from 1 for people reading the message"
+        );
+        assert_eq!(
+            reason(b"nan,0,0,1,0,0,0,1"),
+            "value 1 is not a finite number"
+        );
+        assert_eq!(
+            reason(b"0,0,0,0,0,0,0,0"),
+            "neither sensor reported an orientation"
+        );
+    }
+
+    #[test]
     fn round_trips_simulator_encoding() {
         let q = Quat::from_axis_angle(crate::math::Vec3::new(0.2, 0.5, 0.8), 1.1);
         let frame = parse_frame(encode_frame(q, None).as_bytes()).unwrap();

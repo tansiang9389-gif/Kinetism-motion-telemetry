@@ -1089,3 +1089,66 @@ pub fn apply_event(app: &mut KinetismApp, event: GameEvent) {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::game::dist;
+
+    fn canvas(width: f32, height: f32) -> Rect {
+        Rect::from_min_size(Pos2::new(40.0, 25.0), Vec2::new(width, height))
+    }
+
+    #[test]
+    fn view_round_trips_points_and_shows_the_full_reach_for_both_sides() {
+        for rect in [canvas(1100.0, 640.0), canvas(560.0, 900.0)] {
+            for side in [Side::Left, Side::Right] {
+                let view = View::new(rect, side, 0.0, 0.0);
+                let shoulder = view.pos([0.0, 0.0]);
+                assert!(
+                    (shoulder.x - rect.center().x) * (side.sign() as f32) < 0.0,
+                    "{side:?}: the shoulder is drawn toward the other side to leave room for the arm"
+                );
+                assert!(
+                    view.pos([0.3, 0.0]).x > shoulder.x,
+                    "{side:?}: game x grows to the right on screen (mirror view)"
+                );
+                assert!(view.pos([0.0, 0.3]).y < shoulder.y, "{side:?}: y is up");
+                for p in [[0.0, 0.0], [0.62, -0.35], [-0.9, 0.8], [1.0, 0.0]] {
+                    let back = view.game(view.pos(p));
+                    assert!(
+                        dist(back, p) < 1e-4,
+                        "{side:?}: {p:?} came back as {back:?}"
+                    );
+                }
+                for i in 0..72 {
+                    let a = f64::from(i) * std::f64::consts::TAU / 72.0;
+                    let hand = view.pos([a.cos(), a.sin()]);
+                    assert!(
+                        rect.expand(0.5).contains(hand),
+                        "{side:?}: a fully reaching hand at {:.0} deg is drawn at {hand:?}, outside {rect:?}",
+                        a.to_degrees()
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn screen_shake_moves_the_picture_but_not_the_pointer_target() {
+        let rect = canvas(1100.0, 640.0);
+        let calm = View::new(rect, Side::Right, 0.0, 1.3);
+        let shaken = View::new(rect, Side::Right, 1.0, 1.3);
+        let jolt = shaken.pos([0.4, 0.1]) - calm.pos([0.4, 0.1]);
+        assert!(
+            jolt.length() > 1.0 && jolt.x.abs() <= 9.0 && jolt.y.abs() <= 9.0,
+            "a full shake moves the drawing by up to 9 px: {jolt:?}"
+        );
+        let pointer = Pos2::new(700.0, 300.0);
+        assert_eq!(
+            shaken.game(pointer),
+            calm.game(pointer),
+            "the simulator's mouse target stays put while the screen shakes"
+        );
+    }
+}

@@ -527,6 +527,73 @@ mod tests {
         assert_eq!(game.score_percent(), 0.0);
     }
 
+    #[test]
+    fn star_thresholds_are_inclusive_at_sixty_eighty_and_ninety_percent() {
+        for (score, stars) in [
+            (f64::NAN, 0),
+            (0.0, 0),
+            (60.0f64.next_down(), 0),
+            (60.0, 1),
+            (UNLOCK_SCORE_PERCENT.next_down(), 1),
+            (UNLOCK_SCORE_PERCENT, 2),
+            (90.0f64.next_down(), 2),
+            (90.0, 3),
+            (100.0, 3),
+        ] {
+            assert_eq!(stars_for(score), stars, "{score}%");
+        }
+        assert_eq!(
+            UNLOCK_SCORE_PERCENT, 80.0,
+            "two stars is exactly the score that unlocks the next level"
+        );
+    }
+
+    #[test]
+    fn streak_ignores_undated_games_and_counts_a_busy_day_once() {
+        let today = NaiveDate::from_ymd_opt(2026, 3, 18).unwrap();
+        let at = |days_ago: i64, hour: u32| {
+            let d = today - chrono::Duration::days(days_ago);
+            Some(
+                Local
+                    .from_local_datetime(&d.and_hms_opt(hour, 0, 0).unwrap())
+                    .single()
+                    .expect("unambiguous local time")
+                    .with_timezone(&Utc),
+            )
+        };
+        let game = |level, when: Option<DateTime<Utc>>| GameSession {
+            recorded_at: when,
+            ..session(level, 70.0, Utc::now())
+        };
+        let games = [
+            game(GameLevel::AppleTrace, at(0, 8)),
+            game(GameLevel::PnfD1, at(0, 12)),
+            game(GameLevel::PnfD2, at(0, 21)),
+            game(GameLevel::AppleTrace, at(1, 9)),
+            game(GameLevel::PnfD1, at(1, 18)),
+            game(GameLevel::AppleTrace, None),
+            game(GameLevel::PnfD1, None),
+            game(GameLevel::AppleTrace, at(3, 10)),
+        ];
+        let refs: Vec<&GameSession> = games.iter().collect();
+        assert_eq!(
+            streak_days(&refs, today),
+            2,
+            "five games over today and yesterday make a 2-day streak"
+        );
+        assert_eq!(streak_days(&refs[5..7], today), 0, "undated games only");
+        assert_eq!(
+            streak_days(&[&games[3], &games[5], &games[6]], today),
+            1,
+            "undated games do not count as playing today"
+        );
+        assert_eq!(
+            streak_days(&[], NaiveDate::MIN),
+            0,
+            "no day before the first date"
+        );
+    }
+
     fn patient() -> Patient {
         Patient {
             id: "p1".into(),

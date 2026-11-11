@@ -195,3 +195,103 @@ pub fn new_id(prefix: &str) -> String {
         fastrand::u16(..)
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::clinical::{grade_shoulder_abduction, mmt_title};
+    use std::collections::HashSet;
+
+    fn record(grade: u8, title: &str) -> MeasurementRecord {
+        MeasurementRecord {
+            id: new_id("rec"),
+            patient_id: "p1".into(),
+            patient_name: "Siti".into(),
+            body_part: Movement::ShoulderAbduction.body_part().into(),
+            movement: Movement::ShoulderAbduction,
+            side: Some(Side::Left),
+            arm: Anthropometrics::default(),
+            angle_degrees: 40.0,
+            peak_angle_degrees: Some(42.0),
+            force_newtons: 20.0,
+            torque_nm: None,
+            mmt_grade: grade,
+            mmt_title: title.into(),
+            mmt_rationale: String::new(),
+            mmt_source: MmtSource::Auto,
+            auto_mmt_grade: Some(grade),
+            attempt_number: 1,
+            elbow_flexion_degrees: None,
+            plane_degrees: None,
+            recorded_at: None,
+            source: SOURCE_DESKTOP.into(),
+        }
+    }
+
+    #[test]
+    fn new_id_is_prefix_then_creation_time_then_four_hex_digits() {
+        let before = Utc::now().timestamp_micros();
+        let id = new_id("game-session");
+        let after = Utc::now().timestamp_micros();
+        let mut parts = id.rsplitn(3, '-');
+        let (suffix, micros, prefix) = (
+            parts.next().unwrap(),
+            parts.next().unwrap(),
+            parts.next().unwrap(),
+        );
+        assert_eq!(prefix, "game-session", "{id}");
+        let micros: i64 = micros
+            .parse()
+            .unwrap_or_else(|_| panic!("no timestamp in {id}"));
+        assert!(
+            (before..=after).contains(&micros),
+            "{id} was made between {before} and {after}"
+        );
+        assert!(
+            suffix.len() == 4
+                && suffix
+                    .chars()
+                    .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c)),
+            "{id}"
+        );
+    }
+
+    #[test]
+    fn ids_made_one_after_another_never_collide() {
+        let mut ids = HashSet::new();
+        let mut suffixes = HashSet::new();
+        for _ in 0..200 {
+            let id = new_id("rec");
+            suffixes.insert(id.rsplit('-').next().unwrap().to_string());
+            ids.insert(id);
+            // Saves are user actions: never two in the same microsecond.
+            let made = Utc::now().timestamp_micros();
+            while Utc::now().timestamp_micros() == made {}
+        }
+        assert_eq!(ids.len(), 200, "every id is unique");
+        assert!(
+            suffixes.len() >= 190,
+            "the suffix is random, not a counter or constant: {} distinct",
+            suffixes.len()
+        );
+    }
+
+    #[test]
+    fn badge_shows_the_saved_grade_including_a_physio_override() {
+        for peak in [0.0, 10.0, 45.0, 95.0] {
+            let mmt = grade_shoulder_abduction(peak, None, None);
+            assert_eq!(
+                record(mmt.grade, &mmt.title).badge(),
+                mmt.badge(),
+                "the saved record repeats the live grade chip at {peak} deg"
+            );
+        }
+        // How the measure screen applies a physio grade.
+        let mut confirmed = record(3, mmt_title(3));
+        assert_eq!(confirmed.badge(), "Grade 3 / 5 (Fair)");
+        confirmed.mmt_grade = 4;
+        confirmed.mmt_title = mmt_title(4).into();
+        confirmed.mmt_source = MmtSource::Physio;
+        assert_eq!(confirmed.badge(), "Grade 4 / 5 (Good)");
+    }
+}
