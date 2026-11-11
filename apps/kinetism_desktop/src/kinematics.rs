@@ -507,4 +507,49 @@ mod tests {
         let (u, f) = sim.quats();
         assert!((cal.pose(u, Some(f), Side::Right).elevation_deg - 80.0).abs() < 0.5);
     }
+
+    #[test]
+    fn partial_samples_and_low_elevation_leave_fields_undefined() {
+        let mut sim = SimArm::new(Side::Right);
+        let mut acc = PoseAccumulator::default();
+        for _ in 1..SAMPLES_PER_POSE {
+            let (u, f) = sim.quats();
+            acc.push(u, Some(f));
+        }
+        assert!(
+            capture_rest(&acc).is_none(),
+            "the rest pose needs a full still sample"
+        );
+
+        for (forearm_samples, has_axis) in [
+            (SAMPLES_PER_POSE / 2 - 1, false),
+            (SAMPLES_PER_POSE / 2, true),
+        ] {
+            acc.clear();
+            for i in 0..SAMPLES_PER_POSE {
+                let (u, f) = sim.quats();
+                acc.push(u, (i < forearm_samples).then_some(f));
+            }
+            let rest = capture_rest(&acc).expect("upper-arm samples are enough");
+            assert_eq!(
+                rest.forearm_axis.is_some(),
+                has_axis,
+                "forearm axis needs the forearm in at least half the samples ({forearm_samples} of {SAMPLES_PER_POSE})"
+            );
+        }
+
+        let cal = calibrate(&mut sim);
+        for (elevation, defined) in [(10.0, false), (20.0, true)] {
+            sim.elevation_deg = elevation;
+            sim.plane_deg = 0.0;
+            let (u, f) = sim.quats();
+            let pose = cal.pose(u, Some(f), Side::Right);
+            assert_eq!(
+                pose.plane_deg.is_some(),
+                defined,
+                "plane of elevation at {elevation} deg: {:?}",
+                pose.plane_deg
+            );
+        }
+    }
 }

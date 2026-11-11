@@ -206,3 +206,332 @@ impl ArmTracker {
             || self.pose.is_some_and(|p| p.forearm_dir.is_none())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::kinematics::{SAMPLES_PER_POSE, SimArm};
+    use crate::sensor::frame::SensorFrame;
+    use std::time::Duration;
+
+    fn frame(sim: &SimArm, forearm: bool) -> SensorFrame {
+        let (upper, fore) = sim.quats();
+        SensorFrame {
+            upper: Some(upper),
+            forearm: forearm.then_some(fore),
+        }
+    }
+
+    fn frames(sim: &SimArm, n: usize, forearm: bool) -> Vec<TimedFrame> {
+        (0..n)
+            .map(|_| TimedFrame {
+                frame: frame(sim, forearm),
+                at: Instant::now(),
+            })
+            .collect()
+    }
+
+    /// Rest pose then forward pose, driven the way the Measure screen buttons do.
+    fn calibrate(tracker: &mut ArmTracker, sim: &mut SimArm, forearm: bool) {
+        sim.elevation_deg = 0.0;
+        sim.plane_deg = 0.0;
+        sim.elbow_deg = 0.0;
+        tracker.start_rest_capture();
+        tracker.feed(&frames(sim, SAMPLES_PER_POSE, forearm));
+        assert_eq!(tracker.step, CalStep::Forward, "rest pose captured");
+        sim.elevation_deg = 60.0;
+        sim.plane_deg = 90.0;
+        tracker.start_forward_capture();
+        tracker.feed(&frames(sim, SAMPLES_PER_POSE, forearm));
+        assert!(
+            tracker.is_calibrated(),
+            "forward pose completes calibration: {:?}",
+            tracker.message
+        );
+    }
+
+    #[test]
+    fn calibration_restarts_on_movement_then_tracks_pose_peaks_and_history() {
+        let mut sim = SimArm::new(Side::Right);
+        let mut tracker = ArmTracker::new(Side::Right);
+        assert!(!tracker.is_calibrated(), "a new tracker needs calibration");
+        tracker.start_rest_capture();
+        assert_eq!(tracker.step, CalStep::CapturingRest);
+        tracker.feed(&frames(&sim, 5, true));
+        sim.elevation_deg = 25.0;
+        tracker.feed(&frames(&sim, 1, true));
+        assert!(tracker.moving_warning, "moving during capture warns");
+        assert!(tracker.progress() < 0.1, "capture restarts after movement");
+        assert_eq!(tracker.step, CalStep::CapturingRest, "still capturing");
+
+        sim.elevation_deg = 0.0;
+        tracker.feed(&frames(&sim, SAMPLES_PER_POSE, true));
+        assert_eq!(
+            tracker.step,
+            CalStep::Forward,
+            "a still rest pose is captured"
+        );
+        assert!(
+            !tracker.moving_warning,
+            "warning clears once a pose is captured"
+        );
+
+        sim.elevation_deg = 60.0;
+        sim.plane_deg = 90.0;
+        tracker.start_forward_capture();
+        tracker.feed(&frames(&sim, SAMPLES_PER_POSE, true));
+        assert!(
+            tracker.is_calibrated(),
+            "forward pose completes calibration"
+        );
+        assert!(
+            tracker.message.is_none(),
+            "no hint after a good calibration"
+        );
+
+        // The first pose after calibration seeds the smoother; later poses are smoothed.
+        let before = tracker.hand.expect("hand position after calibration");
+        sim.elevation_deg = 90.0;
+        sim.plane_deg = 0.0;
+        tracker.feed(&frames(&sim, 1, true));
+        let pose = tracker.pose.expect("live pose after calibration");
+        assert!(
+            (pose.elevation_deg - 90.0).abs() < 0.5,
+            "abduction {}",
+            pose.elevation_deg
+        );
+        let hand = tracker.hand.expect("smoothed hand");
+        for ((h, b), p) in hand.iter().zip(before).zip(pose.hand) {
+            assert!(
+                (h - (b + 0.45 * (p - b))).abs() < 1e-9,
+                "hand moves 45% of the way to the new pose"
+            );
+        }
+
+        sim.elevation_deg = 30.0;
+        sim.elbow_deg = 40.0;
+        tracker.feed(&frames(&sim, 1, true));
+        assert!(
+            (tracker.peak_elevation - 90.0).abs() < 0.5,
+            "peak keeps the highest elevation, got {}",
+            tracker.peak_elevation
+        );
+        assert!(
+            (tracker.peak_elbow - 40.0).abs() < 0.5,
+            "elbow peak {}",
+            tracker.peak_elbow
+        );
+        tracker.reset_peaks();
+        assert!(
+            (tracker.peak_elevation - 30.0).abs() < 0.5,
+            "reset starts from the current pose, got {}",
+            tracker.peak_elevation
+        );
+
+        let base = Instant::now();
+        for s in 0..=20u64 {
+            tracker.feed(&[TimedFrame {
+                frame: frame(&sim, true),
+                at: base + Duration::from_secs(s),
+            }]);
+        }
+        let first = tracker.history.front().expect("history").0;
+        let last = tracker.history.back().expect("history").0;
+        assert!(
+            last - first <= HISTORY_SECONDS + 1e-6,
+            "history spans at most 15 s, got {}",
+            last - first
+        );
+        assert!(
+            last - first >= HISTORY_SECONDS - 1.0,
+            "history keeps the recent 15 s, got {}",
+            last - first
+        );
+
+        tracker.recalibrate();
+        assert_eq!(
+            tracker.step,
+            CalStep::Rest,
+            "recalibrate restarts at step 1"
+        );
+        assert!(!tracker.is_calibrated());
+        assert!(
+            tracker.pose.is_none() && tracker.hand.is_none(),
+            "no stale pose after recalibrating"
+        );
+    }
+
+    #[test]
+    fn forward_pose_errors_keep_step_two_and_explain_the_fix() {
+        let mut sim = SimArm::new(Side::Left);
+        let mut tracker = ArmTracker::new(Side::Left);
+        tracker.start_forward_capture();
+        tracker.feed(&frames(&sim, SAMPLES_PER_POSE, true));
+        assert_eq!(
+            tracker.step,
+            CalStep::Rest,
+            "a forward pose without a rest pose goes back to step 1"
+        );
+        assert!(tracker.calibration.is_none());
+
+        tracker.start_rest_capture();
+        tracker.feed(&frames(&sim, SAMPLES_PER_POSE, true));
+        assert_eq!(tracker.step, CalStep::Forward);
+
+        sim.elevation_deg = 10.0;
+        sim.plane_deg = 90.0;
+        tracker.start_forward_capture();
+        tracker.feed(&frames(&sim, SAMPLES_PER_POSE, true));
+        assert_eq!(tracker.step, CalStep::Forward, "a low arm stays on step 2");
+        let hint = tracker.message.clone().unwrap_or_default();
+        assert!(
+            hint.starts_with("Raise the arm further forward") && hint.contains("at least 25 deg"),
+            "low-arm hint: {hint}"
+        );
+        assert!(!tracker.is_calibrated());
+
+        sim.elevation_deg = 50.0;
+        sim.elbow_deg = 70.0;
+        tracker.start_forward_capture();
+        assert!(
+            tracker.message.is_none(),
+            "a new capture clears the old hint"
+        );
+        tracker.feed(&frames(&sim, SAMPLES_PER_POSE, true));
+        let hint = tracker.message.clone().unwrap_or_default();
+        assert!(
+            hint.starts_with("Keep the elbow straight"),
+            "bent-elbow hint: {hint}"
+        );
+        assert_eq!(tracker.step, CalStep::Forward);
+
+        sim.elbow_deg = 0.0;
+        tracker.start_forward_capture();
+        tracker.feed(&frames(&sim, SAMPLES_PER_POSE, true));
+        assert!(
+            tracker.is_calibrated(),
+            "retrying with a straight elbow succeeds: {:?}",
+            tracker.message
+        );
+    }
+
+    #[test]
+    fn rest_only_calibration_needs_a_rest_pose_and_side_changes_recalibrate() {
+        let mut sim = SimArm::new(Side::Right);
+        let mut tracker = ArmTracker::new(Side::Right);
+        tracker.skip_forward_pose();
+        assert_eq!(
+            tracker.step,
+            CalStep::Rest,
+            "skip before step 1 does nothing"
+        );
+        assert!(tracker.calibration.is_none());
+
+        tracker.start_rest_capture();
+        tracker.feed(&frames(&sim, SAMPLES_PER_POSE, true));
+        tracker.skip_forward_pose();
+        assert!(
+            tracker.is_calibrated(),
+            "skip after the rest pose calibrates"
+        );
+        assert!(
+            !tracker.calibration.expect("calibration").heading_measured,
+            "the heading is only estimated"
+        );
+        assert!(
+            tracker
+                .message
+                .as_deref()
+                .is_some_and(|m| m.starts_with("Rest-only calibration")),
+            "rest-only hint: {:?}",
+            tracker.message
+        );
+        sim.elevation_deg = 80.0;
+        tracker.feed(&frames(&sim, 1, true));
+        let elevation = tracker.pose.expect("pose").elevation_deg;
+        assert!(
+            (elevation - 80.0).abs() < 0.5,
+            "elevation stays exact: {elevation}"
+        );
+
+        tracker.set_side(Side::Right);
+        assert!(tracker.is_calibrated(), "same side keeps the calibration");
+        tracker.set_side(Side::Left);
+        assert_eq!(tracker.side, Side::Left);
+        assert_eq!(
+            tracker.step,
+            CalStep::Rest,
+            "the other arm needs a new calibration"
+        );
+        assert!(!tracker.is_calibrated() && tracker.pose.is_none());
+        assert!(tracker.message.is_none(), "recalibration clears the hint");
+    }
+
+    #[test]
+    fn upper_arm_only_stream_calibrates_without_an_elbow_angle() {
+        let mut sim = SimArm::new(Side::Right);
+        let mut tracker = ArmTracker::new(Side::Right);
+        tracker.start_rest_capture();
+        let (_, fore) = sim.quats();
+        let forearm_only: Vec<TimedFrame> = (0..SAMPLES_PER_POSE)
+            .map(|_| TimedFrame {
+                frame: SensorFrame {
+                    upper: None,
+                    forearm: Some(fore),
+                },
+                at: Instant::now(),
+            })
+            .collect();
+        tracker.feed(&forearm_only);
+        assert_eq!(
+            tracker.step,
+            CalStep::CapturingRest,
+            "without the upper-arm sensor calibration cannot progress"
+        );
+        assert_eq!(tracker.progress(), 0.0);
+
+        // Wi-Fi KIN1 sensor: a single IMU on the upper arm.
+        calibrate(&mut tracker, &mut sim, false);
+        let cal = tracker.calibration.expect("calibration");
+        assert!(
+            cal.forearm_axis.is_none(),
+            "no forearm axis without a forearm sensor"
+        );
+        assert_eq!(cal.forearm_yaw_offset, 0.0);
+        assert!(
+            tracker.forearm_missing(),
+            "elbow flexion is flagged as unavailable"
+        );
+
+        sim.elevation_deg = 75.0;
+        sim.plane_deg = 0.0;
+        sim.elbow_deg = 30.0;
+        tracker.feed(&frames(&sim, 1, true));
+        let pose = tracker.pose.expect("pose");
+        assert!(
+            (pose.elevation_deg - 75.0).abs() < 0.5,
+            "shoulder abduction works with one IMU: {}",
+            pose.elevation_deg
+        );
+        assert!(
+            pose.plane_deg.is_some_and(|p| p.abs() < 0.5),
+            "measured heading: {:?}",
+            pose.plane_deg
+        );
+        assert!(
+            pose.elbow_flexion_deg.is_none(),
+            "an uncalibrated forearm sensor is ignored"
+        );
+
+        // Two-sensor calibration, then the forearm sensor drops out.
+        let mut both = ArmTracker::new(Side::Right);
+        calibrate(&mut both, &mut sim, true);
+        assert!(!both.forearm_missing(), "both segments are streaming");
+        both.feed(&frames(&sim, 1, false));
+        assert!(
+            both.forearm_missing(),
+            "a forearm sensor that stops is flagged"
+        );
+        assert!(both.pose.expect("pose").elbow_flexion_deg.is_none());
+    }
+}

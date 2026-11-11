@@ -526,4 +526,179 @@ mod tests {
         ));
         assert_eq!(game.score_percent(), 0.0);
     }
+
+    fn patient() -> Patient {
+        Patient {
+            id: "p1".into(),
+            name: "Pat".into(),
+            code: "PT-1".into(),
+            arm: None,
+            affected_side: None,
+            updated_at: None,
+        }
+    }
+
+    #[test]
+    fn pnf_level_plays_through_the_game_loop_to_a_saved_session() {
+        let mut game = Game::new(GameLevel::PnfD2, Side::Right, Some(150.0), 2, false, 11);
+        assert!(
+            game.update([0.0, 0.0], 40.0, 1.0).is_empty(),
+            "countdown still running"
+        );
+        assert_eq!(game.stage, Stage::Countdown(2.0));
+        assert!(game.update([0.0, 0.0], 40.0, 2.5).contains(&GameEvent::Go));
+        assert_eq!(
+            game.max_elevation, 0.0,
+            "the countdown does not count elevation"
+        );
+        let path = match &game.mode {
+            Mode::Pnf(round) => round.path,
+            Mode::Apple(_) => unreachable!("level 2 is a PNF round"),
+        };
+        let mut events = Vec::new();
+        for _ in 0..2 {
+            events.extend(game.update(path.start, 100.0, 0.05));
+            for i in 0..=60 {
+                // Sensor glitches must not count as shoulder elevation.
+                let glitch = if i % 2 == 0 { f64::NAN } else { f64::INFINITY };
+                events.extend(game.update(path.point(f64::from(i) / 60.0), glitch, 0.05));
+            }
+            events.extend(game.update(path.end, 120.0, 0.05));
+            for i in 0..=30 {
+                events.extend(game.update(
+                    lerp(path.end, path.start, f64::from(i) / 30.0),
+                    100.0,
+                    0.05,
+                ));
+            }
+        }
+        assert_eq!(game.stage, Stage::Finished);
+        let count = |pred: fn(&GameEvent) -> bool| events.iter().filter(|e| pred(e)).count();
+        assert_eq!(count(|e| matches!(e, GameEvent::RepStarted(_))), 2);
+        assert_eq!(
+            count(|e| matches!(e, GameEvent::FruitSliced { clean: true, .. })),
+            6,
+            "every fruit sliced cleanly"
+        );
+        assert_eq!(count(|e| matches!(e, GameEvent::ReachedTop)), 2);
+        assert!(events.contains(&GameEvent::RepDone {
+            clean: true,
+            combo: 2
+        }));
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, GameEvent::Finished { stars: 3, .. })),
+            "finished with three stars"
+        );
+
+        let s = game.to_session(&patient(), Utc::now());
+        assert_eq!(
+            (
+                s.level,
+                s.side,
+                s.reps,
+                s.clean_reps,
+                s.bombs_hit,
+                s.max_combo
+            ),
+            (GameLevel::PnfD2, Side::Right, 2, 2, 0, 2)
+        );
+        assert_eq!(s.completion_percent, 100.0);
+        assert!(s.score_percent >= 95.0, "score {}", s.score_percent);
+        assert!(
+            s.accuracy_percent >= 95.0,
+            "accuracy {}",
+            s.accuracy_percent
+        );
+        assert_eq!(
+            s.max_elevation_deg, 120.0,
+            "non-finite elevation samples are ignored"
+        );
+        assert_eq!(s.points, game.points());
+        assert_eq!(
+            (s.patient_id.as_str(), s.source.as_str()),
+            ("p1", SOURCE_DESKTOP)
+        );
+        assert!(s.duration_seconds > 0.0);
+
+        assert!(
+            game.update(path.start, 170.0, 0.05).is_empty(),
+            "a finished game ignores input"
+        );
+        assert!(game.skip().is_empty(), "nothing to skip after the round");
+        assert_eq!(game.max_elevation, 120.0);
+    }
+
+    #[test]
+    fn skipping_apples_scores_partial_tracing_and_waits_for_the_pause() {
+        let mut game = Game::new(GameLevel::AppleTrace, Side::Left, None, 8, true, 4);
+        assert!(game.update([0.0, 0.0], 0.0, 3.1).contains(&GameEvent::Go));
+        let pts = match &game.mode {
+            Mode::Apple(round) => round.tracer.path.points.clone(),
+            Mode::Pnf(_) => unreachable!("level 0 is the apple"),
+        };
+        for p in &pts[..pts.len() / 4] {
+            game.update(*p, 60.0, 0.1);
+        }
+        let events = game.skip();
+        let score = match events.as_slice() {
+            [GameEvent::AppleSliced { score, .. }] => *score,
+            other => panic!("expected one sliced apple, got {other:?}"),
+        };
+        let (coverage, tracer_score) = match &game.mode {
+            Mode::Apple(round) => (round.tracer.coverage(), round.tracer.score()),
+            Mode::Pnf(_) => unreachable!(),
+        };
+        assert_eq!(
+            score, tracer_score,
+            "a skipped apple keeps its tracing score"
+        );
+        assert!(
+            coverage > 0.15 && coverage < 0.5,
+            "partial outline traced: {coverage}"
+        );
+        assert!(score > 0.0 && score < 0.8, "partial credit: {score}");
+        assert!(
+            game.skip().is_empty(),
+            "skip is ignored while the next apple is coming"
+        );
+
+        for apple in 2..=APPLES_PER_ROUND {
+            for _ in 0..15 {
+                game.update([3.0, 3.0], 60.0, 0.1);
+            }
+            let events = game.skip();
+            assert!(
+                matches!(events.first(), Some(GameEvent::AppleSliced { score, .. }) if *score == 0.0),
+                "untraced apple {apple} scores zero: {events:?}"
+            );
+            assert_eq!(
+                events
+                    .iter()
+                    .any(|e| matches!(e, GameEvent::Finished { .. })),
+                apple == APPLES_PER_ROUND,
+                "the round ends after the last apple"
+            );
+        }
+        assert_eq!(game.stage, Stage::Finished);
+        let expected = score / f64::from(APPLES_PER_ROUND) * 100.0;
+        assert!(
+            (game.score_percent() - expected).abs() < 1e-9,
+            "skipped apples count as zero: {} vs {expected}",
+            game.score_percent()
+        );
+        assert_eq!(game.stars(), 0);
+        let s = game.to_session(&patient(), Utc::now());
+        assert_eq!(
+            (s.level, s.side, s.reps, s.clean_reps),
+            (GameLevel::AppleTrace, Side::Left, 3, 0)
+        );
+        assert!(
+            s.completion_percent < 20.0,
+            "completion {}",
+            s.completion_percent
+        );
+        assert!(game.skip().is_empty(), "nothing to skip after the round");
+    }
 }

@@ -439,4 +439,72 @@ mod tests {
         let short = diagonal(GameLevel::PnfD2, Side::Right, 0.5);
         assert!(short.end[1] < d2.end[1]);
     }
+
+    #[test]
+    fn stalled_swipes_time_out_and_crosswise_slices_are_not_clean() {
+        let mut round = PnfRound::new(GameLevel::PnfD1, Side::Right, 1.0, 0, false, 5);
+        assert_eq!(
+            round.reps_total, 1,
+            "a zero-rep setting still plays one rep"
+        );
+        assert!(
+            round.update([2.0, 2.0], 60.0).is_empty(),
+            "no timeout while waiting at the basket"
+        );
+        assert_eq!(round.phase, Phase::GoToStart);
+        assert_eq!(
+            round.update(round.path.start, 0.05),
+            vec![PnfEvent::RepStarted(1)]
+        );
+
+        // Cut across the middle fruit, perpendicular to the diagonal.
+        let fruit = round.fruits[1].pos;
+        let tangent = round.path.tangent(0.6);
+        let normal = [-tangent[1], tangent[0]];
+        let (from, to) = (
+            sub(fruit, scale(normal, 0.3)),
+            add(fruit, scale(normal, 0.3)),
+        );
+        let events = round.update(from, 0.05);
+        assert!(
+            events.is_empty(),
+            "moving off the diagonal slices nothing: {events:?}"
+        );
+        let events = round.update(to, 0.05);
+        assert!(
+            matches!(events.as_slice(), [PnfEvent::Sliced { clean: false, .. }]),
+            "a crosswise cut slices but is not clean: {events:?}"
+        );
+        assert_eq!(round.points, 8, "unclean slices earn fewer points");
+
+        // The patient stalls: the round moves on after the swipe timeout.
+        assert_eq!(round.update(to, 31.0), vec![PnfEvent::ReachedTop]);
+        assert_eq!(round.phase, Phase::Return);
+        assert!(
+            round.update(to, 10.0).is_empty(),
+            "still waiting for the basket"
+        );
+        assert_eq!(
+            round.update(to, 21.0),
+            vec![
+                PnfEvent::RepDone {
+                    clean: false,
+                    combo: 0
+                },
+                PnfEvent::Finished
+            ]
+        );
+        assert_eq!(round.phase, Phase::Done);
+        assert_eq!(round.points, 13, "unclean slice plus the return bonus");
+        assert_eq!(round.clean_reps, 0);
+        assert!(
+            round.rep_scores[0] < 0.6,
+            "one of three fruit and an off-path swipe score low: {}",
+            round.rep_scores[0]
+        );
+        assert!(
+            round.update(round.path.start, 1.0).is_empty(),
+            "a finished round ignores input"
+        );
+    }
 }

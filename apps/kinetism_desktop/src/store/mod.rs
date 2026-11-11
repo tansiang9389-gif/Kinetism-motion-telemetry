@@ -476,6 +476,9 @@ async fn pull(client: &FirestoreClient) -> Event {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::clinical::{Anthropometrics, Movement};
+    use crate::model::{GameLevel, MmtSource};
+    use std::path::Path;
 
     fn write(collection: &str, id: &str) -> PendingWrite {
         PendingWrite {
@@ -511,5 +514,342 @@ mod tests {
                 ("new".to_string(), 2)
             ]
         );
+    }
+
+    /// Scratch folder under the git-ignored `target` directory.
+    fn test_dir(name: &str) -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join("test-data")
+            .join(crate::model::new_id(name))
+    }
+
+    fn runtime() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("runtime")
+    }
+
+    /// Local-only store: no project id, so nothing ever talks to Firestore.
+    fn open(dir: &Path, runtime: &tokio::runtime::Runtime) -> DataStore {
+        DataStore::open(
+            runtime.handle(),
+            eframe::egui::Context::default(),
+            None,
+            dir.to_path_buf(),
+        )
+    }
+
+    fn patient(id: &str, name: &str) -> Patient {
+        Patient {
+            id: id.into(),
+            name: name.into(),
+            code: "PT-101".into(),
+            arm: None,
+            affected_side: Some(Side::Left),
+            updated_at: Some(Utc::now()),
+        }
+    }
+
+    fn record(id: &str, grade: u8, recorded_at: Option<DateTime<Utc>>) -> MeasurementRecord {
+        MeasurementRecord {
+            id: id.into(),
+            patient_id: "p1".into(),
+            patient_name: "Siti".into(),
+            body_part: "Shoulder".into(),
+            movement: Movement::ShoulderAbduction,
+            side: Some(Side::Left),
+            arm: Anthropometrics::default(),
+            angle_degrees: 40.0,
+            peak_angle_degrees: Some(42.0),
+            force_newtons: 20.0,
+            torque_nm: Some(4.0),
+            mmt_grade: grade,
+            mmt_title: crate::clinical::mmt_title(grade).into(),
+            mmt_rationale: "test".into(),
+            mmt_source: MmtSource::Auto,
+            auto_mmt_grade: Some(grade),
+            attempt_number: 1,
+            elbow_flexion_degrees: None,
+            plane_degrees: None,
+            recorded_at,
+            source: crate::model::SOURCE_DESKTOP.into(),
+        }
+    }
+
+    fn game(id: &str) -> GameSession {
+        GameSession {
+            id: id.into(),
+            patient_id: "p1".into(),
+            patient_name: "Siti".into(),
+            side: Side::Left,
+            level: GameLevel::AppleTrace,
+            score_percent: 50.0,
+            points: 100,
+            stars: 0,
+            reps: 3,
+            clean_reps: 0,
+            bombs_hit: 0,
+            max_combo: 0,
+            accuracy_percent: 50.0,
+            completion_percent: 50.0,
+            duration_seconds: 60.0,
+            max_elevation_deg: 45.0,
+            recorded_at: Some(Utc::now()),
+            source: crate::model::SOURCE_DESKTOP.into(),
+        }
+    }
+
+    #[test]
+    fn offline_writes_are_deduplicated_and_survive_a_restart() {
+        let runtime = runtime();
+        let dir = test_dir("restart");
+        let mut store = open(&dir, &runtime);
+        assert!(
+            !store.status().enabled,
+            "no project id keeps the store local"
+        );
+        assert!(
+            store.patients.is_empty() && store.cache_error().is_none(),
+            "a missing cache is not an error"
+        );
+
+        let mut siti = patient("p1", "Siti");
+        store.upsert_patient(siti.clone());
+        siti.name = "Siti Aminah".into();
+        store.upsert_patient(siti.clone());
+        let yesterday = Utc::now() - chrono::Duration::days(1);
+        store.add_record(record("r-old", 2, Some(yesterday)));
+        store.add_record(record("r-new", 3, Some(Utc::now())));
+        store.add_record(record("r-undated", 1, None));
+        let mut regraded = record("r-new", 4, Some(Utc::now()));
+        regraded.mmt_source = MmtSource::Physio;
+        store.add_record(regraded);
+        store.add_game(game("g1"));
+        assert_eq!(store.patients.len(), 1, "editing a patient replaces it");
+        assert_eq!(store.records.len(), 3, "re-grading replaces the record");
+        assert_eq!(store.pending_count(), 5, "one queued write per document");
+        assert!(store.is_record_pending("r-new") && !store.is_record_pending("r-missing"));
+        let queued = store
+            .pending
+            .iter()
+            .find(|w| w.id == "p1")
+            .expect("patient write");
+        assert_eq!(
+            queued.fields["name"],
+            firestore::string("Siti Aminah"),
+            "the latest edit is what gets sent"
+        );
+
+        // Writes that were in flight when the app closed must be retried.
+        store.pending.iter_mut().for_each(|w| w.in_flight = true);
+        store.settings.reps_per_round = 5;
+        store.save_cache();
+        assert!(store.cache_error().is_none(), "{:?}", store.cache_error());
+
+        let reopened = open(&dir, &runtime);
+        assert_eq!(reopened.patients, store.patients);
+        assert_eq!(reopened.settings.reps_per_round, 5);
+        assert_eq!(
+            reopened.pending_count(),
+            5,
+            "unsent writes survive a restart"
+        );
+        assert!(
+            reopened.pending.iter().all(|w| !w.in_flight),
+            "restored writes are sent again"
+        );
+        let ids: Vec<&str> = reopened.records.iter().map(|r| r.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            ["r-new", "r-old", "r-undated"],
+            "newest first, undated last"
+        );
+        assert_eq!(reopened.records[0].mmt_source, MmtSource::Physio);
+        assert_eq!(reopened.records_for("p1").len(), 3);
+        assert!(reopened.records_for("p2").is_empty());
+        assert_eq!(reopened.games_for("p1").len(), 1);
+        assert_eq!(
+            reopened.patient("p1").map(|p| p.name.as_str()),
+            Some("Siti Aminah")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn sent(requests: &mut UnboundedReceiver<Request>) -> Vec<String> {
+        std::iter::from_fn(|| requests.try_recv().ok())
+            .map(|r| match r {
+                Request::Refresh => "refresh".to_string(),
+                Request::Write(w) => w.id,
+            })
+            .collect()
+    }
+
+    fn deliver(events: &UnboundedSender<Event>, event: Event) {
+        assert!(events.send(event).is_ok(), "the store is listening");
+    }
+
+    #[test]
+    fn sync_events_retry_failed_writes_and_merge_pulled_data() {
+        let runtime = runtime();
+        let dir = test_dir("sync");
+        let mut store = open(&dir, &runtime);
+        // Stand in for the Firestore worker: capture requests, inject events.
+        let (req_tx, mut requests) = unbounded_channel();
+        let (events, ev_rx) = unbounded_channel();
+        store.requests = Some(req_tx);
+        store.events = Some(ev_rx);
+        store.status.enabled = true;
+
+        store.add_record(record("r1", 2, Some(Utc::now())));
+        store.add_record(record("r2", 3, Some(Utc::now())));
+        assert_eq!(
+            sent(&mut requests),
+            ["r1", "r2"],
+            "writes are sent when queued"
+        );
+
+        let offline = "Cannot reach Firestore (timeout) - will retry";
+        deliver(
+            &events,
+            Event::WriteFailed {
+                collection: firestore::RECORDS.into(),
+                id: "r1".into(),
+                message: offline.into(),
+            },
+        );
+        deliver(
+            &events,
+            Event::Written {
+                collection: firestore::RECORDS.into(),
+                id: "r2".into(),
+            },
+        );
+        store.poll();
+        assert_eq!(
+            store.pending_count(),
+            1,
+            "the acknowledged write leaves the queue"
+        );
+        assert_eq!(
+            store.status().last_error.as_deref(),
+            Some(offline),
+            "the error stays while writes are queued"
+        );
+        store.flush_pending();
+        assert_eq!(
+            sent(&mut requests),
+            ["r1"],
+            "only the failed write is retried"
+        );
+
+        store.last_refresh = Instant::now() - REFRESH_EVERY - Duration::from_secs(1);
+        store.poll();
+        assert_eq!(
+            sent(&mut requests),
+            ["refresh"],
+            "the periodic refresh pulls without duplicating in-flight writes"
+        );
+        assert!(store.status().loading);
+
+        let denied = "Firestore 403 PERMISSION_DENIED: Missing or insufficient permissions.";
+        deliver(&events, Event::PullFailed(denied.into()));
+        store.poll();
+        assert!(!store.status().loading);
+        assert_eq!(store.status().last_error.as_deref(), Some(denied));
+
+        let mut remote_r1 = record("r1", 0, Some(Utc::now()));
+        remote_r1.mmt_title = "remote copy".into();
+        let mut phone = record("r9", 5, Some(Utc::now()));
+        phone.patient_id = "p9".into();
+        deliver(
+            &events,
+            Event::Pulled {
+                patients: vec![patient("p9", "Phone patient")],
+                records: vec![remote_r1, phone],
+                games: Vec::new(),
+            },
+        );
+        store.poll();
+        assert!(store.status().last_pull.is_some() && !store.status().loading);
+        assert!(
+            store.status().last_error.is_none(),
+            "a good pull clears the error"
+        );
+        let r1 = store.records.iter().find(|r| r.id == "r1").expect("r1");
+        assert_eq!(
+            r1.mmt_grade, 2,
+            "a queued local edit wins over the pulled copy"
+        );
+        assert!(
+            store.records.iter().any(|r| r.id == "r9"),
+            "records from the phone appear"
+        );
+        assert!(
+            !store.records.iter().any(|r| r.id == "r2"),
+            "records that are no longer queued follow the pulled data"
+        );
+        assert_eq!(store.patients.len(), 1);
+
+        deliver(
+            &events,
+            Event::WriteFailed {
+                collection: firestore::RECORDS.into(),
+                id: "r1".into(),
+                message: offline.into(),
+            },
+        );
+        store.poll();
+        store.flush_pending();
+        assert_eq!(sent(&mut requests), ["r1"]);
+        deliver(
+            &events,
+            Event::Written {
+                collection: firestore::RECORDS.into(),
+                id: "r1".into(),
+            },
+        );
+        store.poll();
+        assert_eq!(store.pending_count(), 0);
+        assert!(
+            store.status().last_error.is_none(),
+            "an empty queue clears the error"
+        );
+        let reopened = open(&dir, &runtime);
+        assert_eq!(reopened.pending_count(), 0, "the drained queue was saved");
+        assert!(reopened.records.iter().any(|r| r.id == "r9"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn unreadable_or_unwritable_cache_is_reported() {
+        let runtime = runtime();
+        let dir = test_dir("corrupt");
+        std::fs::create_dir_all(&dir).expect("scratch folder");
+        std::fs::write(dir.join("desktop-cache.json"), "{ not json").expect("cache file");
+        let store = open(&dir, &runtime);
+        assert!(
+            store
+                .cache_error()
+                .is_some_and(|e| e.starts_with("Local cache unreadable")),
+            "{:?}",
+            store.cache_error()
+        );
+        assert!(store.patients.is_empty() && store.pending_count() == 0);
+
+        let blocker = dir.join("not-a-folder");
+        std::fs::write(&blocker, "x").expect("blocking file");
+        let mut store = open(&blocker, &runtime);
+        assert!(store.cache_error().is_none());
+        store.add_record(record("r1", 2, None));
+        assert!(
+            store
+                .cache_error()
+                .is_some_and(|e| e.starts_with("Could not save the local cache")),
+            "{:?}",
+            store.cache_error()
+        );
+        assert_eq!(store.pending_count(), 1, "the write stays queued in memory");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

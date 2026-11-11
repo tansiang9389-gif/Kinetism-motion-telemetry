@@ -330,4 +330,89 @@ mod tests {
         assert!(s.stats.upper_present);
         assert!(!s.stats.forearm_present);
     }
+
+    #[test]
+    fn link_states_choose_connect_menu_spinner_and_repaint() {
+        let name = || "Physio_A".to_string();
+        // (state, live: repaint + measure, busy: spinner, idle: show "Connect sensor")
+        for (state, live, busy, idle) in [
+            (LinkState::Idle, false, false, true),
+            (
+                LinkState::Error("No Bluetooth adapter".into()),
+                false,
+                false,
+                true,
+            ),
+            (LinkState::Scanning, false, true, false),
+            (LinkState::Connecting(name()), false, true, false),
+            (LinkState::Reconnecting(name()), false, true, false),
+            (LinkState::Listening("UDP 4210".into()), false, true, false),
+            (LinkState::Streaming(name()), true, false, false),
+            (LinkState::Simulated, true, false, false),
+            (LinkState::NoData(name()), false, false, false),
+        ] {
+            assert_eq!(
+                (state.is_live(), state.is_busy(), state.is_idle()),
+                (live, busy, idle),
+                "{state:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn active_source_tracks_invalid_packets_wifi_status_and_bounded_queue() {
+        let mut s = Shared::new();
+        s.reset(Source::Bluetooth, LinkState::Streaming("Physio_A".into()));
+        s.invalid(Source::Bluetooth, "expected 8 values, got 3".into());
+        assert_eq!(s.stats.invalid_packets, 1);
+        assert_eq!(
+            s.stats.last_invalid.as_deref(),
+            Some("expected 8 values, got 3")
+        );
+
+        let packet = kin1::Kin1Packet {
+            flags: kin1::FLAG_SENSOR_OK,
+            sequence: 1,
+            timestamp_ms: 0,
+            quaternion: Quat::IDENTITY,
+            battery_percent: 76,
+            accuracy: 2,
+            sample_rate_hz: 100.0,
+        };
+        s.note_wifi(&packet, true);
+        assert_eq!(
+            (s.stats.packets, s.stats.battery_percent),
+            (0, None),
+            "Wi-Fi status is ignored while Bluetooth is active"
+        );
+
+        s.reset(Source::Wifi, LinkState::Listening("UDP 4210".into()));
+        s.push(Source::Wifi, frame());
+        s.note_wifi(&packet, false);
+        s.note_wifi(&packet, true);
+        assert_eq!(
+            s.stats.packets, 2,
+            "forwarded and throttled packets are each counted once"
+        );
+        assert_eq!(s.queue.len(), 1, "throttled packets are not queued");
+        assert_eq!(
+            (
+                s.stats.battery_percent,
+                s.stats.accuracy,
+                s.stats.device_rate_hz
+            ),
+            (Some(76), Some(2), Some(100.0))
+        );
+
+        for _ in 0..MAX_QUEUE + 44 {
+            s.push(Source::Wifi, frame());
+        }
+        assert_eq!(
+            s.queue.len(),
+            MAX_QUEUE,
+            "an undrained queue keeps only the newest frames"
+        );
+        assert_eq!(s.stats.packets, 2 + MAX_QUEUE as u64 + 44);
+        assert!(s.stats.rate_hz > 100.0, "rate {}", s.stats.rate_hz);
+    }
 }

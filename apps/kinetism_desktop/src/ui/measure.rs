@@ -583,3 +583,70 @@ fn auto_rationale(r: &MeasurementRecord) -> &str {
         .and_then(|(_, rest)| rest.split_once(": "))
         .map_or(r.mmt_rationale.as_str(), |(_, base)| base)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::clinical::Anthropometrics;
+
+    fn record(rationale: &str) -> MeasurementRecord {
+        MeasurementRecord {
+            id: "rec-1".into(),
+            patient_id: "p1".into(),
+            patient_name: "Pat".into(),
+            body_part: "Shoulder".into(),
+            movement: Movement::ShoulderAbduction,
+            side: Some(Side::Right),
+            arm: Anthropometrics::default(),
+            angle_degrees: 82.0,
+            peak_angle_degrees: Some(85.0),
+            force_newtons: 30.0,
+            torque_nm: Some(7.0),
+            mmt_grade: 3,
+            mmt_title: mmt_title(3).into(),
+            mmt_rationale: rationale.into(),
+            mmt_source: MmtSource::Auto,
+            auto_mmt_grade: Some(3),
+            attempt_number: 1,
+            elbow_flexion_degrees: None,
+            plane_degrees: None,
+            recorded_at: None,
+            source: SOURCE_DESKTOP.into(),
+        }
+    }
+
+    #[test]
+    fn auto_rationale_is_not_nested_by_repeated_physio_grades() {
+        let auto = grade_shoulder_abduction(85.0, None, None).rationale;
+        assert!(
+            auto.contains(": "),
+            "the grade 3 rationale itself contains a colon: {auto}"
+        );
+        let mut r = record(&auto);
+        assert_eq!(
+            auto_rationale(&r),
+            auto,
+            "auto-graded records keep their text"
+        );
+        // Same format as the physiotherapist grade buttons in `last_record_card`.
+        for g in [4u8, 5, 2] {
+            r.mmt_rationale = format!(
+                "Physiotherapist grade {g} ({}).{AUTO_MARKER}3/5: {}",
+                mmt_title(g),
+                auto_rationale(&r)
+            );
+            assert_eq!(
+                auto_rationale(&r),
+                auto,
+                "re-grading to {g} keeps the original suggestion"
+            );
+        }
+        assert_eq!(
+            r.mmt_rationale,
+            format!("Physiotherapist grade 2 (Poor).{AUTO_MARKER}3/5: {auto}"),
+            "only the latest physiotherapist grade is kept"
+        );
+        let phone = record("Entered on the phone");
+        assert_eq!(auto_rationale(&phone), "Entered on the phone");
+    }
+}

@@ -591,4 +591,124 @@ mod tests {
         };
         assert!(bad.validate().is_err());
     }
+
+    #[test]
+    fn shoulder_grade_boundaries_clamping_and_backward_drift() {
+        let g = |peak: f64| grade_shoulder_abduction(peak, None, None);
+        assert_eq!(g(-20.0).grade, 0, "negative peaks clamp to zero");
+        assert_eq!(g(4.9).grade, 0);
+        assert!(g(0.0).needs_physio_confirmation, "0 vs 1 needs palpation");
+        assert_eq!(g(5.0).grade, 1, "5 deg starts grade 1");
+        assert_eq!(g(14.9).grade, 1);
+        assert_eq!(g(15.0).grade, 2, "15 deg starts grade 2");
+        assert!(
+            !g(10.0).needs_physio_confirmation && !g(45.0).needs_physio_confirmation,
+            "grades 1-2 are decided by range alone"
+        );
+        let full = g(ABDUCTION_FULL_TEST_RANGE_DEG);
+        assert_eq!(full.grade, 3, "80 deg counts as the full 90 deg test range");
+        assert!(full.needs_physio_confirmation, "grades 4-5 need resistance");
+        assert_eq!(full.badge(), "Grade 3 / 5 (Fair)");
+        let over = g(250.0);
+        assert_eq!(over.grade, 3);
+        assert!(
+            over.rationale.contains("(180 deg)"),
+            "peaks clamp to 180 deg: {}",
+            over.rationale
+        );
+
+        let behind = grade_shoulder_abduction(60.0, Some(10.0), Some(-45.0));
+        assert!(
+            behind
+                .rationale
+                .ends_with(" Arm drifted behind the body (45 deg)."),
+            "{}",
+            behind.rationale
+        );
+        assert!(!behind.rationale.contains("Elbow was bent"));
+        let base = g(60.0).rationale;
+        for (elbow, plane) in [(Some(30.0), Some(40.0)), (None, Some(-30.0))] {
+            assert_eq!(
+                grade_shoulder_abduction(60.0, elbow, plane).rationale,
+                base,
+                "elbow {elbow:?} and plane {plane:?} are within tolerance"
+            );
+        }
+    }
+
+    #[test]
+    fn elbow_grading_covers_every_grade_and_rejects_bad_inputs() {
+        let arm = Anthropometrics::default();
+        let baseline = arm.effective_moving_mass_kg() * STANDARD_GRAVITY;
+        let strong = baseline * 2.0;
+        for (angle, force, grade) in [
+            (5.0, 1.0, 0),
+            (20.0, strong, 1),
+            (140.0, baseline * 0.3, 1),
+            (50.0, strong, 2),
+            (140.0, baseline * 0.5, 2),
+            (90.0, strong, 3),
+            (120.0, strong, 4),
+            (140.0, baseline * 1.2, 4),
+            (140.0, strong, 5),
+        ] {
+            let r = grade_elbow_flexion(angle, force, &arm);
+            assert_eq!(r.grade, grade, "{angle} deg, {force:.1} N: {}", r.rationale);
+            assert_eq!(r.title, mmt_title(grade));
+            assert_eq!(
+                r.needs_physio_confirmation,
+                grade == 0,
+                "only grade 0 asks for palpation"
+            );
+        }
+        assert_eq!(
+            grade_elbow_flexion(f64::NAN, -5.0, &arm).grade,
+            0,
+            "NaN angle and negative force grade as no movement"
+        );
+        let at_rest = arm.elbow_force_newtons(0.0, 0.0);
+        assert!(at_rest.is_finite() && at_rest > 0.0);
+        assert_eq!(
+            arm.elbow_force_newtons(f64::NAN, -1.0),
+            at_rest,
+            "bad angle and acceleration fall back to rest"
+        );
+        assert_eq!(
+            arm.elbow_force_newtons(400.0, f64::INFINITY),
+            arm.elbow_force_newtons(180.0, 0.0),
+            "angle clamps to 180 deg and infinite acceleration is ignored"
+        );
+
+        let check = |bicep_cm, forearm_cm, arm_length_cm| {
+            Anthropometrics {
+                bicep_cm,
+                forearm_cm,
+                arm_length_cm,
+            }
+            .validate()
+        };
+        assert_eq!(
+            check(65.0, 55.0, 95.0),
+            Ok(()),
+            "upper limits are inclusive"
+        );
+        assert_eq!(
+            check(10.0, 10.0, 15.0),
+            Ok(()),
+            "lower limits are inclusive"
+        );
+        assert_eq!(
+            check(29.0, 60.0, 55.0),
+            Err("Enter a forearm circumference between 10 and 55 cm.".to_string())
+        );
+        assert!(
+            check(29.0, 24.5, f64::NAN)
+                .is_err_and(|e| e.contains("arm length between 15 and 95 cm")),
+            "NaN arm length is rejected"
+        );
+
+        assert_eq!(mmt_title(9), "Normal", "grades above 5 clamp to Normal");
+        assert_eq!(guideline(9).next_goal, guideline(5).next_goal);
+        assert_eq!(guideline(0).focus, "Elicit a first contraction");
+    }
 }

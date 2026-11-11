@@ -480,3 +480,123 @@ fn daily_grid(ui: &mut egui::Ui, summaries: &[MuscleSummary], today: NaiveDate) 
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::clinical::{Anthropometrics, Movement, Side};
+    use chrono::{DateTime, TimeZone, Utc};
+
+    fn at(day: NaiveDate, hour: u32) -> DateTime<Utc> {
+        Local
+            .from_local_datetime(&day.and_hms_opt(hour, 0, 0).expect("valid time"))
+            .single()
+            .expect("unambiguous local time")
+            .with_timezone(&Utc)
+    }
+
+    fn record(movement: Movement, grade: u8, when: Option<DateTime<Utc>>) -> MeasurementRecord {
+        MeasurementRecord {
+            id: crate::model::new_id("rec"),
+            patient_id: "p1".into(),
+            patient_name: "Pat".into(),
+            body_part: movement.body_part().into(),
+            movement,
+            side: Some(Side::Right),
+            arm: Anthropometrics::default(),
+            angle_degrees: 50.0,
+            peak_angle_degrees: None,
+            force_newtons: 10.0,
+            torque_nm: None,
+            mmt_grade: grade,
+            mmt_title: mmt_title(grade).into(),
+            mmt_rationale: String::new(),
+            mmt_source: MmtSource::Auto,
+            auto_mmt_grade: Some(grade),
+            attempt_number: 1,
+            elbow_flexion_degrees: None,
+            plane_degrees: None,
+            recorded_at: when,
+            source: "test".into(),
+        }
+    }
+
+    fn game(level: GameLevel, when: Option<DateTime<Utc>>) -> GameSession {
+        GameSession {
+            id: crate::model::new_id("game"),
+            patient_id: "p1".into(),
+            patient_name: "Pat".into(),
+            side: Side::Right,
+            level,
+            score_percent: 70.0,
+            points: 0,
+            stars: 1,
+            reps: 8,
+            clean_reps: 0,
+            bombs_hit: 0,
+            max_combo: 0,
+            accuracy_percent: 70.0,
+            completion_percent: 100.0,
+            duration_seconds: 60.0,
+            max_elevation_deg: 90.0,
+            recorded_at: when,
+            source: "test".into(),
+        }
+    }
+
+    #[test]
+    fn daily_grades_keep_the_best_grade_and_game_days_count_sessions() {
+        let today = Local::now().date_naive();
+        let yesterday = today.pred_opt().expect("yesterday");
+        let records = [
+            record(Movement::ShoulderAbduction, 2, Some(at(today, 10))),
+            record(Movement::ShoulderAbduction, 3, Some(at(today, 20))),
+            record(Movement::ShoulderAbduction, 1, Some(at(today, 12))),
+            record(Movement::ShoulderAbduction, 2, Some(at(yesterday, 12))),
+            record(Movement::ElbowFlexion, 5, Some(at(today, 12))),
+            record(Movement::ShoulderAbduction, 4, None),
+        ];
+        let refs: Vec<&MeasurementRecord> = records.iter().collect();
+        let deltoid: Vec<(NaiveDate, u8)> = daily_grades(&refs, Muscle::MiddleDeltoid)
+            .into_iter()
+            .collect();
+        assert_eq!(
+            deltoid,
+            [(yesterday, 2), (today, 3)],
+            "best shoulder grade per day; undated and elbow records are skipped"
+        );
+        assert_eq!(
+            daily_grades(&refs, Muscle::BicepsBrachii).get(&today),
+            Some(&5)
+        );
+        assert!(
+            daily_grades(&refs, Muscle::PectoralisMajor).is_empty(),
+            "no MMT test grades the pectoralis"
+        );
+
+        let games = [
+            game(GameLevel::PnfD1, Some(at(today, 10))),
+            game(GameLevel::PnfD1, Some(at(today, 12))),
+            game(GameLevel::PnfD2, Some(at(yesterday, 12))),
+            game(GameLevel::AppleTrace, None),
+        ];
+        let game_refs: Vec<&GameSession> = games.iter().collect();
+        let pecs: Vec<(NaiveDate, u32)> = game_days(&game_refs, Muscle::PectoralisMajor)
+            .into_iter()
+            .collect();
+        assert_eq!(
+            pecs,
+            [(today, 2)],
+            "two D1 sessions today train the pectoralis"
+        );
+        let supra: Vec<(NaiveDate, u32)> = game_days(&game_refs, Muscle::Supraspinatus)
+            .into_iter()
+            .collect();
+        assert_eq!(
+            supra,
+            [(yesterday, 1)],
+            "D2 trains supraspinatus; undated games are skipped"
+        );
+        assert!(game_days(&game_refs, Muscle::BicepsBrachii).is_empty());
+    }
+}

@@ -531,4 +531,171 @@ mod tests {
         let f = doc(json!({"angleDegrees": {"doubleValue": "NaN"}}));
         assert_eq!(get_f64(&f, "angleDegrees"), None);
     }
+
+    #[test]
+    fn record_decoding_fills_missing_grades_and_clamps_bad_values() {
+        let phone_default_arm = Anthropometrics {
+            bicep_cm: 28.0,
+            forearm_cm: 24.0,
+            arm_length_cm: 54.0,
+        };
+        let shoulder = record_from_fields(
+            "s1",
+            &doc(json!({
+                "patientId": {"stringValue": "p1"},
+                "bodyPart": {"stringValue": "Shoulder"},
+                "angleDegrees": {"doubleValue": 85.0}
+            })),
+        );
+        assert_eq!(shoulder.movement, Movement::ShoulderAbduction);
+        assert_eq!(shoulder.arm, phone_default_arm);
+        assert_eq!(
+            shoulder.force_newtons,
+            phone_default_arm.shoulder_load_newtons(85.0),
+            "missing force uses the shoulder load model"
+        );
+        assert_eq!(
+            (shoulder.mmt_grade, shoulder.mmt_title.as_str()),
+            (3, "Fair")
+        );
+        assert_eq!(
+            shoulder.mmt_rationale,
+            grade_shoulder_abduction(85.0, None, None).rationale,
+            "missing grade is computed from the angle"
+        );
+        assert_eq!(
+            shoulder.patient_name, "p1",
+            "name falls back to the patient id"
+        );
+        assert_eq!(
+            (
+                shoulder.attempt_number,
+                shoulder.mmt_source,
+                shoulder.source.as_str()
+            ),
+            (1, MmtSource::Auto, "phone")
+        );
+
+        let elbow = record_from_fields(
+            "e1",
+            &doc(json!({
+                "patientId": {"stringValue": "p1"},
+                "angleDegrees": {"integerValue": "122"}
+            })),
+        );
+        let force = phone_default_arm.elbow_force_newtons(122.0, PHONE_APP_DEFAULT_ACCEL_G);
+        assert_eq!(
+            elbow.movement,
+            Movement::ElbowFlexion,
+            "no bodyPart means Arm"
+        );
+        assert_eq!(elbow.body_part, "Arm");
+        assert_eq!(
+            elbow.force_newtons, force,
+            "missing force uses the phone model"
+        );
+        assert_eq!(
+            elbow.mmt_grade,
+            grade_elbow_flexion(122.0, force, &phone_default_arm).grade
+        );
+
+        let messy = record_from_fields(
+            "m1",
+            &doc(json!({
+                "patientId": {"stringValue": "p2"},
+                "patientName": {"stringValue": "   "},
+                "side": {"stringValue": " L "},
+                "mmtGrade": {"integerValue": "9"},
+                "autoMmtGrade": {"integerValue": "-2"},
+                "attemptNumber": {"integerValue": "0"},
+                "mmtSource": {"stringValue": "nurse"},
+                "date": {"timestampValue": "yesterday"},
+                "angleDegrees": {"stringValue": "45"}
+            })),
+        );
+        assert_eq!(
+            (messy.mmt_grade, messy.mmt_title.as_str()),
+            (5, "Normal"),
+            "grades above 5 clamp"
+        );
+        assert_eq!(messy.auto_mmt_grade, Some(0), "negative grades clamp to 0");
+        assert_eq!(messy.attempt_number, 1, "attempts start at 1");
+        assert_eq!(
+            messy.mmt_source,
+            MmtSource::Auto,
+            "unknown sources are auto"
+        );
+        assert_eq!(messy.side, Some(Side::Left));
+        assert_eq!(messy.patient_name, "p2", "blank names count as missing");
+        assert!(messy.recorded_at.is_none(), "unparseable dates are dropped");
+        assert_eq!(
+            messy.angle_degrees, 90.0,
+            "a non-numeric angle falls back to the phone default"
+        );
+    }
+
+    #[test]
+    fn game_decoding_falls_back_to_level_index_and_clamps_counts() {
+        let game = |v: Value| game_from_fields("g", &doc(v));
+        let by_index = game(json!({
+            "patientId": {"stringValue": "p1"},
+            "level": {"integerValue": "1"}
+        }))
+        .expect("an integer level without levelKey");
+        assert_eq!(by_index.level, GameLevel::PnfD1);
+        assert_eq!(by_index.side, Side::Right, "missing side defaults to right");
+        assert_eq!(
+            (
+                by_index.points,
+                by_index.stars,
+                by_index.reps,
+                by_index.score_percent
+            ),
+            (0, 0, 0, 0.0)
+        );
+        assert!(by_index.recorded_at.is_none());
+
+        let unknown_key = game(json!({
+            "patientId": {"stringValue": "p1"},
+            "levelKey": {"stringValue": "pnf_d9"},
+            "level": {"integerValue": 2}
+        }))
+        .expect("an unknown levelKey falls back to the index");
+        assert_eq!(unknown_key.level, GameLevel::PnfD2);
+        assert!(
+            game(json!({"patientId": {"stringValue": "p1"}, "level": {"integerValue": "7"}}))
+                .is_none(),
+            "unknown level index"
+        );
+        assert!(
+            game(json!({"levelKey": {"stringValue": "apple_trace"}})).is_none(),
+            "a game needs a patient"
+        );
+
+        let clamped = game(json!({
+            "patientId": {"stringValue": "p1"},
+            "levelKey": {"stringValue": "apple_trace"},
+            "side": {"stringValue": "L"},
+            "scorePercent": {"doubleValue": 140.0},
+            "stars": {"integerValue": "9"},
+            "reps": {"integerValue": "-4"},
+            "bombsHit": {"doubleValue": 2.6}
+        }))
+        .expect("valid game");
+        assert_eq!(
+            (clamped.level, clamped.side),
+            (GameLevel::AppleTrace, Side::Left)
+        );
+        assert_eq!(clamped.score_percent, 100.0, "scores clamp to 100%");
+        assert_eq!(clamped.stars, 3, "stars clamp to 3");
+        assert_eq!(clamped.reps, 0, "negative counts become zero");
+        assert_eq!(clamped.bombs_hit, 3, "counts are rounded");
+        let low = game(json!({
+            "patientId": {"stringValue": "p1"},
+            "level": {"integerValue": "0"},
+            "scorePercent": {"integerValue": "-5"}
+        }))
+        .expect("valid game");
+        assert_eq!(low.score_percent, 0.0, "scores clamp to 0%");
+    }
 }
