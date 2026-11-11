@@ -125,11 +125,12 @@ the goal dialog scrolls when its contents exceed the available height.
 Publication regressions also verify that a build without an AI key fails
 explicitly instead of manufacturing coaching praise or a session recommendation.
 
-The original [counter-template smoke test](test/widget_test.dart) remains
-unchanged. It failed before refinement with Firebase `core/no-app` and still
-expects the starter counter, not this app. Do not treat the full test directory
-as a verified green suite. An existing brace-style lint in the untouched
-repetition classifier also remains.
+The whole test directory now passes with `flutter test`. The original
+counter-template test in [test/widget_test.dart](test/widget_test.dart)
+expected a starter counter this app never had; it was replaced with smoke tests
+for the app shell (an injected home in the Kinetism dark theme, and the default
+startup screen). An existing brace-style lint in the untouched repetition
+classifier also remains.
 
 Synthetic checks do not validate physical sensors, real Firebase permissions,
 cloud persistence, notification delivery or clinical accuracy.

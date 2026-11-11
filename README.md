@@ -104,9 +104,12 @@ Select any screenshot to view it at full size:
 | [pc](pc) | Local Python telemetry receiver and both browser dashboards |
 | [tests](tests) | PC protocol regressions and saved paired-sensor Arduino reference sketches |
 | [apps/medical_device_app](apps/medical_device_app) | Refined Flutter source, native projects, tests and editable branding |
-| [apps/kinetism_desktop](apps/kinetism_desktop) | Rust desktop app: BLE sensor link, shoulder abduction, Fruit PNF game, muscle progress |
+| [apps/kinetism_desktop](apps/kinetism_desktop) | Rust desktop app: Bluetooth and Wi-Fi sensor input, shoulder abduction, Fruit PNF game, muscle progress |
 | [firmware/physio-slave](firmware/physio-slave) | Buildable PlatformIO port of the ESP-NOW forearm slave sketch |
 | [docs/refinement](docs/refinement/design-audit-kinetism.md) | Refinement review, synthetic browser evidence and screenshots |
+
+[CHANGELOG.md](CHANGELOG.md) lists what changed in each release, and
+[TODOS.md](TODOS.md) tracks open hardware and firmware work.
 
 The original upload ZIP is retained as a sanitised **source-only** archive.
 Configured Wi-Fi credentials and compiled/cache files have been removed from

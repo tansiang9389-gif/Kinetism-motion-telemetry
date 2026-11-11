@@ -263,6 +263,7 @@ unreadable. A patient's pulled arm sizes are kept as they are (see
 | `KINETISM_SCREENSHOT=<file.png>` | With `KINETISM_DEMO`: save a screenshot, then exit |
 | `KINETISM_SCREENSHOT_DELAY=<s>` | Screenshot delay (default 6 s) |
 | `WGPU_BACKEND=dx12\|vulkan\|gl` | Override the graphics backend (default on Windows: DX12) |
+| `WGPU_POWER_PREF=low\|high` | GPU preference on PCs with two GPUs (default: `low`, usually the integrated GPU; `high` prefers a discrete GPU) |
 
 ## Test
 
