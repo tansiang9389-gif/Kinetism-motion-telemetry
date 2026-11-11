@@ -140,6 +140,8 @@ pub struct Game {
     pub stage: Stage,
     pub elapsed: f64,
     pub max_elevation: f64,
+    /// The simulator drove this round at some point: show it, never save it.
+    pub practice: bool,
 }
 
 impl Game {
@@ -180,6 +182,7 @@ impl Game {
             stage: Stage::Countdown(COUNTDOWN),
             elapsed: 0.0,
             max_elevation: 0.0,
+            practice: false,
         }
     }
 

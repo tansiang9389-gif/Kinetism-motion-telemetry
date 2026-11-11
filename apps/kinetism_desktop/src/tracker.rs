@@ -24,6 +24,9 @@ pub enum CalStep {
 pub const HISTORY_SECONDS: f64 = 15.0;
 /// Upper-arm data older than this is stale: recording and the game pause.
 pub const LIVE_DATA_SECONDS: f32 = 1.5;
+/// The game follows the hand only while frames keep arriving at least this
+/// often: after a longer gap the hand may have jumped, so its stroke restarts.
+pub const FRESH_DATA_SECONDS: f32 = 0.25;
 
 pub struct ArmTracker {
     pub side: Side,
@@ -84,8 +87,17 @@ impl ArmTracker {
     /// True while upper-arm orientation keeps arriving. Frames carrying only the
     /// forearm sensor cannot move the shoulder angle, so they do not count.
     pub fn has_live_data(&self) -> bool {
-        self.last_frame_at
-            .is_some_and(|t| t.elapsed().as_secs_f32() <= LIVE_DATA_SECONDS)
+        self.data_age().is_some_and(|age| age <= LIVE_DATA_SECONDS)
+    }
+
+    /// True while the newest upper-arm frame is younger than [`FRESH_DATA_SECONDS`].
+    pub fn has_fresh_data(&self) -> bool {
+        self.data_age().is_some_and(|age| age < FRESH_DATA_SECONDS)
+    }
+
+    /// Seconds since the newest upper-arm frame arrived.
+    fn data_age(&self) -> Option<f32> {
+        self.last_frame_at.map(|t| t.elapsed().as_secs_f32())
     }
 
     pub fn recalibrate(&mut self) {
@@ -709,5 +721,33 @@ mod tests {
 
         tracker.feed(&frames(&sim, 1, true));
         assert!(tracker.has_live_data(), "upper-arm data resumes");
+    }
+
+    #[test]
+    fn only_frames_from_the_last_quarter_second_count_as_fresh() {
+        let mut sim = SimArm::new(Side::Right);
+        let mut tracker = ArmTracker::new(Side::Right);
+        assert!(!tracker.has_fresh_data(), "nothing before the first frame");
+        calibrate(&mut tracker, &mut sim, false);
+        assert!(tracker.has_fresh_data() && tracker.has_live_data());
+        for (ms, fresh, live) in [
+            (100, true, true),
+            (400, false, true),
+            (1400, false, true),
+            (2000, false, false),
+        ] {
+            let at = Instant::now()
+                .checked_sub(Duration::from_millis(ms))
+                .expect("the clock has run for a few seconds");
+            tracker.feed(&[TimedFrame {
+                frame: frame(&sim, false),
+                at,
+            }]);
+            assert_eq!(
+                (tracker.has_fresh_data(), tracker.has_live_data()),
+                (fresh, live),
+                "newest upper-arm frame {ms} ms old"
+            );
+        }
     }
 }

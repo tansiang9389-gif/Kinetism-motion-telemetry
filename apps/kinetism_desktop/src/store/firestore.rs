@@ -103,20 +103,21 @@ pub fn patient_to_fields(p: &Patient) -> Fields {
 }
 
 pub fn patient_from_fields(id: &str, f: &Fields) -> Patient {
-    // Dimensions the forms would reject (e.g. 1e155 cm) are dropped, not used.
+    // Kept even outside the form's ranges: Measure shows them and its form
+    // check makes the physiotherapist correct them, instead of defaults
+    // silently replacing the phone app's values.
     let arm = match (
         get_f64(f, "bicepCircumferenceCm"),
         get_f64(f, "forearmCircumferenceCm"),
         get_f64(f, "armLengthCm"),
     ) {
-        (Some(b), Some(fa), Some(l)) => Some(Anthropometrics {
+        (Some(b), Some(fa), Some(l)) if b > 0.0 && fa > 0.0 && l > 0.0 => Some(Anthropometrics {
             bicep_cm: b,
             forearm_cm: fa,
             arm_length_cm: l,
         }),
         _ => None,
-    }
-    .filter(|arm| arm.validate().is_ok());
+    };
     Patient {
         id: id.to_string(),
         name: get_str(f, "name").unwrap_or_else(|| "Unnamed patient".into()),
@@ -358,6 +359,19 @@ fn read_reply(status: StatusCode, body: &[u8]) -> Result<Value, FsError> {
     })
 }
 
+/// A write only counts once Firestore echoes the document it saved: a proxy
+/// answering `200 {}` must not make a queued record look sent.
+fn confirm_write(reply: &Value, collection: &str, id: &str) -> Result<(), FsError> {
+    let saved = reply.get("name").and_then(Value::as_str);
+    if saved.is_some_and(|name| name.ends_with(&format!("/{collection}/{id}"))) {
+        return Ok(());
+    }
+    Err(FsError {
+        message: "Firestore did not confirm the write (a proxy may be in the way)".into(),
+        offline: true,
+    })
+}
+
 impl FirestoreClient {
     pub fn new(project_id: &str) -> Self {
         let http = reqwest::Client::builder()
@@ -441,9 +455,8 @@ impl FirestoreClient {
                 .collect();
             request = request.query(&mask);
         }
-        Self::check(request.send().await.map_err(Self::network)?)
-            .await
-            .map(|_| ())
+        let reply = Self::check(request.send().await.map_err(Self::network)?).await?;
+        confirm_write(&reply, collection, id)
     }
 }
 
@@ -778,8 +791,8 @@ mod tests {
     }
 
     #[test]
-    fn patient_arm_dimensions_outside_the_form_ranges_are_dropped() {
-        let arm = |b: f64, fa: f64, l: f64| {
+    fn patient_arm_sizes_reach_the_form_unless_missing_zero_or_not_finite() {
+        let arm = |b: Value, fa: f64, l: f64| {
             patient_from_fields(
                 "p",
                 &doc(json!({
@@ -791,13 +804,50 @@ mod tests {
             .arm
         };
         assert_eq!(
-            arm(30.5, 25.0, 56.0).map(|a| a.bicep_cm),
+            arm(json!(30.5), 25.0, 56.0).map(|a| a.bicep_cm),
             Some(30.5),
             "phone-app values are kept"
         );
-        assert_eq!(arm(10.0, 10.0, 15.0).map(|a| a.arm_length_cm), Some(15.0));
-        for (b, fa, l) in [(1e155, 25.0, 56.0), (30.0, 0.0, 56.0), (30.0, 25.0, 500.0)] {
-            assert_eq!(arm(b, fa, l), None, "{b} / {fa} / {l} cm");
+        let long = arm(json!(30.5), 25.0, 96.0).expect("an arm outside the form's range");
+        assert_eq!(
+            long.arm_length_cm, 96.0,
+            "kept, so Measure shows it and its form check asks for a fix"
+        );
+        assert!(long.validate().is_err());
+        for (b, fa, l) in [
+            (json!(30.0), 0.0, 56.0),
+            (json!(30.0), 25.0, -56.0),
+            (json!("1e400"), 25.0, 56.0),
+            (json!("NaN"), 25.0, 56.0),
+        ] {
+            assert_eq!(arm(b.clone(), fa, l), None, "{b} / {fa} / {l} cm");
+        }
+    }
+
+    #[test]
+    fn a_write_counts_only_when_firestore_names_the_saved_document() {
+        let saved = json!({
+            "name": "projects/armtracker-84a82/databases/(default)/documents/MeasurementRecords/rec-1",
+            "fields": {}
+        });
+        assert!(confirm_write(&saved, RECORDS, "rec-1").is_ok());
+        for (reply, collection, id) in [
+            (json!({}), RECORDS, "rec-1"),
+            (json!({"name": 42}), RECORDS, "rec-1"),
+            (saved.clone(), RECORDS, "rec-2"),
+            (saved.clone(), RECORDS, "c-1"),
+            (saved.clone(), PATIENTS, "rec-1"),
+        ] {
+            let e = confirm_write(&reply, collection, id).expect_err("not this document");
+            assert!(
+                e.offline,
+                "{reply} for {collection}/{id}: the write stays queued and is retried"
+            );
+            assert!(
+                e.message.starts_with("Firestore did not confirm the write"),
+                "{}",
+                e.message
+            );
         }
     }
 }

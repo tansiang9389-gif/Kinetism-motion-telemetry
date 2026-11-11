@@ -538,14 +538,16 @@ impl KinetismApp {
         self.play.unlocked = None;
         self.play.paused = false;
         self.play.fx = Fx::default();
-        self.play.game = Some(Game::new(
+        let mut game = Game::new(
             level,
             self.side(),
             rom,
             self.store.settings.reps_per_round,
             self.play.bombs,
             fastrand::u64(..),
-        ));
+        );
+        game.practice = self.practice_only();
+        self.play.game = Some(game);
         self.voice.say(
             match level {
                 GameLevel::AppleTrace => "Let's draw an apple! Start at the glowing circle.",
@@ -1076,7 +1078,7 @@ pub fn apply_event(app: &mut KinetismApp, event: GameEvent) {
                 return;
             };
             let session = game.to_session(&patient, chrono::Utc::now());
-            if app.practice_only() {
+            if game.practice || app.practice_only() {
                 // Shown, but neither saved nor unlocking: the simulator is not the patient.
                 app.play.unlocked = None;
                 app.play.result = Some(session);

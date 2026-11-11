@@ -352,16 +352,40 @@ impl DataStore {
             }
         }
         if self.status.enabled {
-            if now.saturating_duration_since(self.last_pull) > PULL_EVERY {
+            if now.saturating_duration_since(self.last_pull) >= PULL_EVERY {
                 self.refresh();
             }
-            if now.saturating_duration_since(self.last_retry) > RETRY_EVERY {
+            if now.saturating_duration_since(self.last_retry) >= RETRY_EVERY {
                 self.flush_pending();
             }
+        }
+        // egui only repaints on input or request: an idle window must still
+        // wake up for the next timed pull or retry.
+        if let Some(wait) = self.next_timer(now) {
+            self.ctx.request_repaint_after(wait);
         }
         if changed {
             self.save_cache();
         }
+    }
+
+    /// Time from `now` until the next timed pull or retry, if one is waiting:
+    /// none while sync is off, a pull is running (its reply wakes the window)
+    /// or every queued write is in flight.
+    fn next_timer(&self, now: Instant) -> Option<Duration> {
+        if !self.status.enabled {
+            return None;
+        }
+        let pull = (!self.status.loading).then_some(self.last_pull + PULL_EVERY);
+        let retry = self
+            .pending
+            .iter()
+            .any(|w| !w.in_flight)
+            .then_some(self.last_retry + RETRY_EVERY);
+        pull.into_iter()
+            .chain(retry)
+            .min()
+            .map(|due| due.saturating_duration_since(now))
     }
 
     fn is_pending(&self, collection: &str, id: &str) -> bool {
@@ -1118,6 +1142,74 @@ mod tests {
     }
 
     #[test]
+    fn an_idle_window_is_woken_for_the_next_pull_or_retry() {
+        let runtime = runtime();
+        let dir = test_dir("wake");
+        let mut store = open(&dir, &runtime);
+        let t0 = Instant::now();
+        let at = |s: u64| t0 + Duration::from_secs(s);
+        assert_eq!(store.next_timer(t0), None, "a local store never syncs");
+
+        let (mut requests, events) = synced(&mut store);
+        let wakes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        store.ctx.set_repaint_observer({
+            let wakes = wakes.clone();
+            move |info| wakes.lock().expect("lock").push(info.delay)
+        });
+        (store.last_pull, store.last_retry) = (t0, t0);
+        assert_eq!(
+            store.next_timer(at(60)),
+            Some(PULL_EVERY - Duration::from_secs(60)),
+            "nothing to retry: the next pull"
+        );
+        store.status.loading = true;
+        assert_eq!(
+            store.next_timer(at(60)),
+            None,
+            "a running pull wakes the window when its reply arrives"
+        );
+        store.status.loading = false;
+
+        store.add_record(record("r1", 2, None));
+        assert_eq!(sent(&mut requests), ["r1"]);
+        store.last_retry = t0;
+        assert_eq!(
+            store.next_timer(at(10)),
+            Some(PULL_EVERY - Duration::from_secs(10)),
+            "a write in flight is not retried"
+        );
+        deliver(
+            &events,
+            Event::WriteFailed {
+                collection: firestore::RECORDS.into(),
+                id: "r1".into(),
+                seq: seq_of(&store, "r1"),
+                message: "Cannot reach Firestore (timeout) - will retry".into(),
+            },
+        );
+        store.poll_at(at(10));
+        let retry_in = RETRY_EVERY - Duration::from_secs(10);
+        assert_eq!(
+            store.next_timer(at(10)),
+            Some(retry_in),
+            "the retry comes first"
+        );
+        assert_eq!(
+            wakes.lock().expect("lock").last(),
+            Some(&retry_in),
+            "poll asks egui to repaint then, even with no input"
+        );
+        assert_eq!(
+            store.next_timer(at(45)),
+            Some(Duration::ZERO),
+            "overdue: at once"
+        );
+        store.poll_at(at(30));
+        assert_eq!(sent(&mut requests), ["r1"], "retried when due, not later");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn every_sync_target_keeps_its_own_cache_file() {
         assert_eq!(
             cache_file_name(Some(firestore::DEFAULT_PROJECT_ID)),
@@ -1233,9 +1325,10 @@ mod tests {
                 "armLengthCm": {"doubleValue": 54.0}
             })),
         );
-        assert!(
-            patient.arm.is_none(),
-            "a patient's impossible arm is ignored"
+        assert_eq!(
+            patient.arm.map(|a| a.bicep_cm),
+            Some(1e155),
+            "a patient's finite sizes are kept for Measure's form check to reject"
         );
 
         let cache = CacheFile {

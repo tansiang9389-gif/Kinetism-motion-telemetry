@@ -64,7 +64,7 @@ impl KinetismApp {
             ui.selectable_value(&mut side, Side::Left, "Left");
             ui.selectable_value(&mut side, Side::Right, "Right");
             if side != self.side() {
-                self.set_side(side);
+                self.choose_measured_arm(side);
             }
             if let Some(affected) = self.current_patient().and_then(|p| p.affected_side)
                 && affected != self.side()
@@ -121,25 +121,49 @@ impl KinetismApp {
         });
         ui.add_space(8.0);
         if ui::primary(ui, "Continue").clicked() {
-            let arm = self.arm();
-            match arm.validate() {
-                Err(e) => self.measure.error = Some(e),
-                Ok(()) => {
-                    self.measure.error = None;
-                    if let Some(mut p) = self
-                        .current_patient()
-                        .and_then(|p| patient_after_setup(&p, self.side(), arm))
-                    {
-                        p.updated_at = Some(chrono::Utc::now());
-                        self.store.upsert_patient(p);
-                    }
-                    self.measure.stage = if self.tracker.is_calibrated() {
-                        MeasureStage::Live
-                    } else {
-                        MeasureStage::Calibrate
-                    };
-                    self.tracker.reset_peaks();
+            self.finish_setup();
+        }
+    }
+
+    /// Switches the arm being measured. Selecting the affected arm brings its
+    /// saved sizes back into the form (as opening the patient does), so sizes
+    /// typed for the other arm can never be saved over them. Selecting the
+    /// other arm keeps the form as it is, to be edited for that arm.
+    fn choose_measured_arm(&mut self, side: Side) {
+        self.set_side(side);
+        if let Some(p) = self.current_patient()
+            && p.affected_side == Some(side)
+        {
+            self.measure.show_arm(p.arm.unwrap_or_default());
+        }
+    }
+
+    /// Continue: saves what setup may change on the patient, then calibrates
+    /// or goes straight to measuring.
+    fn finish_setup(&mut self) {
+        let arm = self.arm();
+        match arm.validate() {
+            Err(e) => self.measure.error = Some(e),
+            Ok(()) => {
+                self.measure.error = None;
+                // Live reads the form: keep the checked sizes there, not a
+                // fallback to saved sizes that a later pull could change.
+                if self.measure.typed_arm().is_none() {
+                    self.measure.show_arm(arm);
                 }
+                if let Some(mut p) = self
+                    .current_patient()
+                    .and_then(|p| patient_after_setup(&p, self.side(), arm))
+                {
+                    p.updated_at = Some(chrono::Utc::now());
+                    self.store.upsert_patient(p);
+                }
+                self.measure.stage = if self.tracker.is_calibrated() {
+                    MeasureStage::Live
+                } else {
+                    MeasureStage::Calibrate
+                };
+                self.tracker.reset_peaks();
             }
         }
     }
@@ -648,10 +672,10 @@ fn auto_rationale(r: &MeasurementRecord) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::tests::{demo, test_app, test_dir};
+    use crate::app::tests::{calibrate_simulator, calibrate_wifi, demo, test_app, test_dir, wifi};
     use crate::kinematics::{SAMPLES_PER_POSE, SimArm};
+    use crate::sensor::TimedFrame;
     use crate::sensor::frame::SensorFrame;
-    use crate::sensor::{Source, TimedFrame};
     use crate::tracker::ArmTracker;
     use std::time::Instant;
 
@@ -881,37 +905,152 @@ mod tests {
         let mut app = test_app(&dir);
         app.store.upsert_patient(patient(None, Some(Side::Right)));
         app.select_patient("p1", false);
-        let mut sim = SimArm::new(Side::Right);
-        let mut tracker = calibrated(&mut sim);
-        sim.elevation_deg = 85.0;
-        feed(&mut tracker, &sim, 1);
-        let shoulder = attempt(&tracker, Movement::ShoulderAbduction);
+        calibrate_simulator(&mut app);
+        (app.sim.arm.elevation_deg, app.sim.arm.plane_deg) = (85.0, 0.0);
+        app.advance(0.1);
+        let simulated = attempt(&app.tracker, Movement::ShoulderAbduction);
 
-        app.switch_source(Source::Simulator);
         assert!(app.practice_only());
-        app.record_attempt(&shoulder);
+        app.record_attempt(&simulated);
         assert!(
             app.store.records.is_empty() && app.measure.last_record.is_none(),
             "simulated attempts are not saved or synced"
         );
 
-        app.demo = Some(demo("measure"));
+        app.demo = Some(demo("hub"));
         assert!(
             !app.practice_only(),
             "demo mode saves to its throwaway store"
         );
-        app.record_attempt(&shoulder);
+        app.record_attempt(&simulated);
         assert_eq!(app.store.records.len(), 1);
 
         app.demo = None;
-        app.switch_source(Source::None);
-        assert!(!app.practice_only(), "real sensors save");
-        app.record_attempt(&shoulder);
-        assert_eq!(app.store.records.len(), 2);
+        let mut arm = SimArm::new(Side::Right);
+        calibrate_wifi(&mut app, &mut arm);
+        (arm.elevation_deg, arm.plane_deg) = (85.0, 0.0);
+        wifi(&mut app, &arm, 1, 0.05);
+        let measured = attempt(&app.tracker, Movement::ShoulderAbduction);
+        assert!((measured.peak - 85.0).abs() < 0.5, "{}", measured.peak);
+        app.record_attempt(&measured);
+        assert_eq!(
+            app.store.records.len(),
+            2,
+            "a real sensor's attempt is saved"
+        );
         assert_eq!(
             app.store.records[0].id,
             app.measure.last_record.clone().unwrap_or_default()
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn form(app: &KinetismApp) -> [String; 3] {
+        [
+            app.measure.bicep.clone(),
+            app.measure.forearm.clone(),
+            app.measure.length.clone(),
+        ]
+    }
+
+    #[test]
+    fn going_back_to_the_affected_arm_restores_its_saved_sizes() {
+        let dir = test_dir("form-side");
+        let mut app = test_app(&dir);
+        let saved = Anthropometrics {
+            bicep_cm: 31.0,
+            forearm_cm: 26.0,
+            arm_length_cm: 57.0,
+        };
+        app.store
+            .upsert_patient(patient(Some(saved), Some(Side::Left)));
+        app.select_patient("p1", false);
+        let saved_form = ["31.0", "26.0", "57.0"].map(String::from);
+        assert_eq!(form(&app), saved_form);
+
+        app.choose_measured_arm(Side::Right);
+        assert_eq!(
+            form(&app),
+            saved_form,
+            "the other arm starts from the form as it was"
+        );
+        app.measure.show_arm(Anthropometrics {
+            bicep_cm: 35.0,
+            forearm_cm: 29.0,
+            arm_length_cm: 60.0,
+        });
+        app.choose_measured_arm(Side::Left);
+        assert_eq!(
+            form(&app),
+            saved_form,
+            "the affected arm's saved sizes come back"
+        );
+        let queued = app.store.pending_count();
+        app.finish_setup();
+        assert_eq!(app.measure.stage, MeasureStage::Calibrate);
+        assert_eq!(
+            (
+                app.store.patient("p1").and_then(|p| p.arm),
+                app.store.pending_count()
+            ),
+            (Some(saved), queued),
+            "the healthy arm's sizes are never saved over them"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn phone_sizes_outside_the_form_ranges_must_be_fixed_not_replaced() {
+        let dir = test_dir("form-range");
+        let mut app = test_app(&dir);
+        let phone = Anthropometrics {
+            bicep_cm: 30.0,
+            forearm_cm: 25.0,
+            arm_length_cm: 96.0,
+        };
+        app.store
+            .upsert_patient(patient(Some(phone), Some(Side::Right)));
+        app.select_patient("p1", false);
+        assert_eq!(app.measure.length, "96.0", "the phone's value is shown");
+        app.finish_setup();
+        assert!(
+            app.measure
+                .error
+                .as_deref()
+                .is_some_and(|e| e.contains("arm length")),
+            "{:?}",
+            app.measure.error
+        );
+        assert_eq!(app.measure.stage, MeasureStage::Setup);
+        assert_eq!(
+            app.store.patient("p1").and_then(|p| p.arm),
+            Some(phone),
+            "no defaults written over it"
+        );
+
+        // Continue with a cleared field falls back to the saved sizes. Live
+        // keeps those checked sizes even if a pull later changes the patient's.
+        let fixed = Anthropometrics {
+            arm_length_cm: 56.0,
+            ..phone
+        };
+        app.measure.show_arm(fixed);
+        app.finish_setup();
+        app.measure.stage = MeasureStage::Setup;
+        app.measure.bicep.clear();
+        app.finish_setup();
+        assert_eq!(
+            app.measure.typed_arm(),
+            Some(fixed),
+            "the checked sizes fill the form"
+        );
+        if let Some(p) = app.store.patients.iter_mut().find(|p| p.id == "p1") {
+            p.arm = Some(Anthropometrics {
+                bicep_cm: 1e155,
+                ..fixed
+            });
+        }
+        assert_eq!(app.arm(), fixed, "Live never reads the pulled sizes");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

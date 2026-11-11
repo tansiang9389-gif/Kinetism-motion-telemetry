@@ -283,6 +283,12 @@ impl SensorHub {
             Err(e) => s.invalid(Source::Simulator, e.to_string()),
         }
     }
+
+    /// A frame as if `source` had received it, without a radio or socket.
+    #[cfg(test)]
+    pub(crate) fn inject(&self, source: Source, frame: SensorFrame) {
+        self.lock().push(source, frame);
+    }
 }
 
 #[cfg(test)]

@@ -54,6 +54,25 @@ pub struct MeasureState {
     pub last_record: Option<String>,
 }
 
+impl MeasureState {
+    /// Fill the arm-size form.
+    pub fn show_arm(&mut self, arm: Anthropometrics) {
+        self.bicep = format!("{:.1}", arm.bicep_cm);
+        self.forearm = format!("{:.1}", arm.forearm_cm);
+        self.length = format!("{:.1}", arm.arm_length_cm);
+    }
+
+    /// The sizes in the form, when all three are numbers.
+    pub fn typed_arm(&self) -> Option<Anthropometrics> {
+        let parse = |s: &str| s.trim().parse::<f64>().ok();
+        Some(Anthropometrics {
+            bicep_cm: parse(&self.bicep)?,
+            forearm_cm: parse(&self.forearm)?,
+            arm_length_cm: parse(&self.length)?,
+        })
+    }
+}
+
 pub struct PlayState {
     pub level: GameLevel,
     pub game: Option<Game>,
@@ -264,10 +283,7 @@ impl KinetismApp {
         if let Some(p) = self.store.patient(id).cloned() {
             let side = p.affected_side.unwrap_or(self.store.settings.side);
             self.set_side(side);
-            let arm = p.arm.unwrap_or_default();
-            self.measure.bicep = format!("{:.1}", arm.bicep_cm);
-            self.measure.forearm = format!("{:.1}", arm.forearm_cm);
-            self.measure.length = format!("{:.1}", arm.arm_length_cm);
+            self.measure.show_arm(p.arm.unwrap_or_default());
         }
         self.store.save_cache();
         if navigate {
@@ -282,6 +298,10 @@ impl KinetismApp {
         self.measure.stage = MeasureStage::Setup;
         self.measure.error = None;
         self.measure.last_record = None;
+        self.discard_game();
+    }
+
+    fn discard_game(&mut self) {
         self.play.game = None;
         self.play.result = None;
         self.play.unlocked = None;
@@ -298,22 +318,10 @@ impl KinetismApp {
     }
 
     pub fn arm(&self) -> Anthropometrics {
-        let parse = |s: &str| s.trim().parse::<f64>().ok();
-        match (
-            parse(&self.measure.bicep),
-            parse(&self.measure.forearm),
-            parse(&self.measure.length),
-        ) {
-            (Some(b), Some(f), Some(l)) => Anthropometrics {
-                bicep_cm: b,
-                forearm_cm: f,
-                arm_length_cm: l,
-            },
-            _ => self
-                .current_patient()
-                .and_then(|p| p.arm)
-                .unwrap_or_default(),
-        }
+        self.measure
+            .typed_arm()
+            .or_else(|| self.current_patient().and_then(|p| p.arm))
+            .unwrap_or_default()
     }
 
     pub fn toast(&mut self, text: impl Into<String>, error: bool) {
@@ -334,8 +342,11 @@ impl KinetismApp {
         self.simulated() && self.demo.is_none()
     }
 
-    /// Change the sensor input. A different sensor (or mounting) needs a new calibration.
+    /// Change the sensor input. A different sensor (or mounting) needs a new
+    /// calibration. Nothing the simulator produced (pose, peaks, a round)
+    /// outlives it, so it can never be saved as the patient's.
     pub fn switch_source(&mut self, source: Source) {
+        let leaving_simulator = self.simulated() && source != Source::Simulator;
         match source {
             Source::Bluetooth => self.sensor.connect_bluetooth(),
             Source::Wifi => self.sensor.connect_wifi(),
@@ -343,8 +354,11 @@ impl KinetismApp {
             Source::None => self.sensor.disconnect(),
         }
         self.wifi_sender = None;
-        if source != Source::None {
+        if source != Source::None || leaving_simulator {
             self.tracker.recalibrate();
+        }
+        if leaving_simulator {
+            self.discard_game();
         }
     }
 
@@ -705,22 +719,24 @@ impl KinetismApp {
         ctx.request_repaint();
     }
 
-    /// Advance the running game from the latest hand position. Without live
-    /// upper-arm data the game holds still, so a sensor dropout cannot time out
-    /// reps and save a low score.
+    /// Advance the running game from the latest hand position. The game only
+    /// follows fresh upper-arm data: during a pause or a gap in the frames the
+    /// hand may move unseen, so the stroke restarts instead of slicing across
+    /// the gap, and a dropout cannot time out reps and save a low score.
     fn update_game(&mut self, dt: f64) {
         self.play.fx.update(dt);
-        let following = !self.play.paused && self.tracker.has_live_data();
+        let practice = self.practice_only();
+        let following = !self.play.paused && self.tracker.has_fresh_data();
         let hand = self.tracker.hand.filter(|_| following);
         let elevation = self.tracker.pose.map_or(0.0, |p| p.elevation_deg);
         let Some(game) = self.play.game.as_mut() else {
             return;
         };
+        game.practice |= practice;
         if game.stage == Stage::Finished {
             return;
         }
         let Some(hand) = hand else {
-            // The hand may move while it is not followed: no slice across the gap.
             game.interrupt();
             return;
         };
@@ -736,12 +752,9 @@ impl KinetismApp {
             crate::ui::game_view::apply_event(self, *event);
         }
     }
-}
 
-impl eframe::App for KinetismApp {
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        let ctx = ui.ctx().clone();
-        let dt = f64::from(ctx.input(|i| i.stable_dt).clamp(0.0, 0.1));
+    /// One frame's data work: sync, sensor frames, tracking and the game.
+    pub(crate) fn advance(&mut self, dt: f64) {
         self.store.poll();
         if self.simulated() {
             crate::demo::autopilot(self, dt);
@@ -752,6 +765,14 @@ impl eframe::App for KinetismApp {
         self.note_wifi_sender(self.sensor.stats().wifi_sender);
         self.tracker.feed(&frames);
         self.update_game(dt);
+    }
+}
+
+impl eframe::App for KinetismApp {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let ctx = ui.ctx().clone();
+        let dt = f64::from(ctx.input(|i| i.stable_dt).clamp(0.0, 0.1));
+        self.advance(dt);
 
         egui::Panel::top("top")
             .frame(
@@ -802,11 +823,13 @@ impl eframe::App for KinetismApp {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::game::{APPLES_PER_ROUND, Mode, is_unlocked};
+    use crate::game::pnf::Phase;
+    use crate::game::{APPLES_PER_ROUND, Mode, Pt, is_unlocked};
     use crate::kinematics::{SAMPLES_PER_POSE, SimArm};
     use crate::sensor::TimedFrame;
     use crate::sensor::frame::SensorFrame;
     use std::path::Path;
+    use std::time::Duration;
 
     /// Scratch folder under the git-ignored `target` directory.
     pub(crate) fn test_dir(name: &str) -> PathBuf {
@@ -874,6 +897,57 @@ pub(crate) mod tests {
         assert!(tracker.is_calibrated());
     }
 
+    /// Starts the Simulator and calibrates with its rest and forward presets.
+    pub(crate) fn calibrate_simulator(app: &mut KinetismApp) {
+        app.switch_source(Source::Simulator);
+        app.sim.rest_pose();
+        app.tracker.start_rest_capture();
+        app.advance(1.05);
+        app.sim.forward_pose();
+        app.tracker.start_forward_capture();
+        app.advance(1.05);
+        assert!(app.tracker.is_calibrated(), "{:?}", app.tracker.message);
+    }
+
+    /// `frames` packets from a Wi-Fi board on `arm`'s upper arm, then one app
+    /// frame of `dt` seconds: a real sensor, minus the socket.
+    pub(crate) fn wifi(app: &mut KinetismApp, arm: &SimArm, frames: usize, dt: f64) {
+        let (upper, _) = arm.quats();
+        for _ in 0..frames {
+            app.sensor.inject(
+                Source::Wifi,
+                SensorFrame {
+                    upper: Some(upper),
+                    forearm: None,
+                },
+            );
+        }
+        app.advance(dt);
+    }
+
+    /// Connects a Wi-Fi board strapped like `arm` and calibrates it.
+    pub(crate) fn calibrate_wifi(app: &mut KinetismApp, arm: &mut SimArm) {
+        app.switch_source(Source::Wifi);
+        (arm.elevation_deg, arm.plane_deg, arm.elbow_deg) = (0.0, 0.0, 0.0);
+        app.tracker.start_rest_capture();
+        wifi(app, arm, SAMPLES_PER_POSE, 0.0);
+        (arm.elevation_deg, arm.plane_deg) = (60.0, 90.0);
+        app.tracker.start_forward_capture();
+        wifi(app, arm, SAMPLES_PER_POSE, 0.0);
+        assert!(app.tracker.is_calibrated(), "{:?}", app.tracker.message);
+    }
+
+    fn round(app: &KinetismApp) -> &Game {
+        app.play.game.as_ref().expect("a round")
+    }
+
+    fn pnf_path(app: &KinetismApp) -> crate::game::pnf::Diagonal {
+        match &round(app).mode {
+            Mode::Pnf(r) => r.path,
+            Mode::Apple(_) => unreachable!("a PNF level"),
+        }
+    }
+
     #[test]
     fn opening_another_patient_starts_over_but_reopening_the_same_one_does_not() {
         let dir = test_dir("switch");
@@ -917,9 +991,8 @@ pub(crate) mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Ends a Level 0 round at 95 %, as the game loop would.
-    fn finish_round(app: &mut KinetismApp) {
-        app.start_game(GameLevel::AppleTrace);
+    /// Ends the running Level 0 round at 95 %, as the game loop would.
+    fn end_round(app: &mut KinetismApp) {
         let game = app.play.game.as_mut().expect("a running game");
         if let Mode::Apple(round) = &mut game.mode {
             round.scores = vec![0.95; APPLES_PER_ROUND as usize];
@@ -940,8 +1013,11 @@ pub(crate) mod tests {
         app.store.upsert_patient(patient("p1"));
         app.select_patient("p1", false);
 
-        app.switch_source(Source::Simulator);
-        finish_round(&mut app);
+        calibrate_simulator(&mut app);
+        app.start_game(GameLevel::AppleTrace);
+        app.advance(3.1);
+        assert_eq!(round(&app).stage, Stage::Playing, "the simulator plays");
+        end_round(&mut app);
         let shown = app.play.result.clone().expect("the result is shown");
         assert_eq!(shown.score_percent, 95.0);
         assert!(app.store.games.is_empty(), "not saved or synced");
@@ -952,8 +1028,10 @@ pub(crate) mod tests {
             false
         ));
 
-        app.demo = Some(demo("result"));
-        finish_round(&mut app);
+        app.demo = Some(demo("hub"));
+        app.start_game(GameLevel::AppleTrace);
+        app.advance(3.1);
+        end_round(&mut app);
         assert_eq!(
             app.store.games.len(),
             1,
@@ -962,12 +1040,129 @@ pub(crate) mod tests {
         assert_eq!(app.play.unlocked, Some(GameLevel::PnfD1));
 
         app.demo = None;
-        app.switch_source(Source::None);
-        finish_round(&mut app);
+        let mut arm = SimArm::new(Side::Right);
+        calibrate_wifi(&mut app, &mut arm);
+        app.start_game(GameLevel::AppleTrace);
+        wifi(&mut app, &arm, 1, 3.1);
+        assert_eq!(round(&app).stage, Stage::Playing, "the Wi-Fi sensor plays");
+        end_round(&mut app);
         assert_eq!(
             app.store.games.len(),
             2,
             "rounds played with a sensor are saved"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn leaving_the_simulator_leaves_nothing_that_could_be_saved() {
+        // "Stop simulator" and closing its window both switch to no source.
+        for exit in [Source::None, Source::Wifi, Source::Bluetooth] {
+            let dir = test_dir("leave-sim");
+            let mut app = test_app(&dir);
+            app.store.upsert_patient(patient("p1"));
+            app.select_patient("p1", false);
+            calibrate_simulator(&mut app);
+            (app.sim.arm.elevation_deg, app.sim.arm.plane_deg) = (95.0, 0.0);
+            app.advance(0.1);
+            assert!(app.tracker.peak_elevation > 90.0, "a simulated peak");
+
+            app.play.bombs = false;
+            app.start_game(GameLevel::PnfD1);
+            app.advance(3.1);
+            app.sim.input = SimInput::HandTarget(pnf_path(&app).start);
+            for _ in 0..20 {
+                app.advance(0.05);
+            }
+            assert!(
+                matches!(&round(&app).mode, Mode::Pnf(r) if r.rep == 1),
+                "the simulator started a rep"
+            );
+            app.play.paused = true;
+
+            app.switch_source(exit);
+            assert!(
+                app.play.game.is_none() && app.play.result.is_none(),
+                "{exit:?}: no round left to end and save"
+            );
+            assert!(app.play.unlocked.is_none() && !app.play.paused);
+            assert!(
+                !app.tracker.is_calibrated() && app.tracker.pose.is_none(),
+                "{exit:?}: the simulator's calibration is gone"
+            );
+            assert_eq!(
+                (app.tracker.peak_elevation, app.tracker.peak_pose),
+                (0.0, None),
+                "{exit:?}: no simulated peak left to record"
+            );
+            assert!(app.tracker.history.is_empty());
+            assert!(app.store.games.is_empty() && app.store.records.is_empty());
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[test]
+    fn a_round_the_simulator_ever_drove_is_never_saved() {
+        let dir = test_dir("practice-flag");
+        let mut app = test_app(&dir);
+        app.store.upsert_patient(patient("p1"));
+        app.select_patient("p1", false);
+        let mut arm = SimArm::new(Side::Right);
+        calibrate_wifi(&mut app, &mut arm);
+        app.start_game(GameLevel::AppleTrace);
+        wifi(&mut app, &arm, 1, 3.1);
+        assert!(!round(&app).practice, "started and played with a sensor");
+
+        calibrate_simulator(&mut app);
+        assert!(
+            round(&app).practice,
+            "marked as soon as the simulator drives it"
+        );
+        // Leaving the simulator discards the round; save it from that to show
+        // the mark alone keeps it out of the patient's data.
+        let practised = app.play.game.take();
+        calibrate_wifi(&mut app, &mut arm);
+        app.play.game = practised;
+        end_round(&mut app);
+        assert!(app.play.result.is_some(), "the result is still shown");
+        assert!(app.store.games.is_empty() && app.play.unlocked.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_short_gap_in_the_sensor_frames_restarts_the_stroke() {
+        let dir = test_dir("stall");
+        let mut app = test_app(&dir);
+        app.store.upsert_patient(patient("p1"));
+        app.select_patient("p1", false);
+        let mut arm = SimArm::new(Side::Right);
+        calibrate_wifi(&mut app, &mut arm);
+        app.play.bombs = false;
+        app.start_game(GameLevel::PnfD1);
+        wifi(&mut app, &arm, 1, 3.1);
+        let path = pnf_path(&app);
+        let mut reach = |app: &mut KinetismApp, to: Pt| {
+            arm.set_hand_target(to[0], to[1]);
+            wifi(app, &arm, 12, 0.05);
+        };
+        reach(&mut app, path.start);
+        assert!(
+            matches!(&round(&app).mode, Mode::Pnf(r) if r.phase == Phase::Swipe),
+            "rep 1 starts at the basket"
+        );
+
+        // 0.4 s without frames, far below the 1.5 s "no live data" pause,
+        // while the hand moves to the top.
+        app.tracker.last_frame_at = Instant::now().checked_sub(Duration::from_millis(400));
+        app.advance(0.05);
+        reach(&mut app, path.end);
+        let Mode::Pnf(r) = &round(&app).mode else {
+            unreachable!("a PNF level")
+        };
+        assert_eq!(r.phase, Phase::Return, "the top was reached");
+        assert!(
+            r.fruits.iter().all(|f| !f.sliced),
+            "nothing is sliced across the gap"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
