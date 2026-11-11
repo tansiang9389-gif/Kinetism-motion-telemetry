@@ -1,6 +1,6 @@
 //! BLE central for the `Physio_A` master sensor (btleplug / WinRT on Windows).
 
-use super::{LinkState, Shared, frame};
+use super::{LinkState, Shared, Source, frame, with};
 use btleplug::api::{Central, CharPropFlags, Manager as _, Peripheral as _, ScanFilter};
 use btleplug::platform::{Adapter, Manager, Peripheral};
 use futures::StreamExt;
@@ -26,18 +26,9 @@ pub enum BleCommand {
 
 type SharedState = Arc<Mutex<Shared>>;
 
-fn with<R>(shared: &SharedState, f: impl FnOnce(&mut Shared) -> R) -> R {
-    let mut guard = shared.lock().unwrap_or_else(|e| e.into_inner());
-    f(&mut guard)
-}
-
-/// Never overwrite simulator mode from the BLE task.
+/// Only applies while Bluetooth is the active source.
 fn set_state(shared: &SharedState, ctx: &eframe::egui::Context, state: LinkState) {
-    with(shared, |s| {
-        if s.state != LinkState::Simulated {
-            s.set_state(state);
-        }
-    });
+    with(shared, |s| s.set_state(Source::Bluetooth, state));
     ctx.request_repaint();
 }
 
@@ -173,7 +164,7 @@ async fn session(
     peripheral.subscribe(&telemetry).await?;
     set_state(shared, ctx, LinkState::Streaming(name.clone()));
 
-    let mut waiting = false;
+    let mut silent = false;
     loop {
         tokio::select! {
             command = commands.recv() => {
@@ -187,11 +178,11 @@ async fn session(
                 match next {
                     Ok(Some(notification)) if notification.uuid == TELEMETRY_UUID => {
                         with(shared, |s| match frame::parse_frame(&notification.value) {
-                            Ok(f) => s.push(f),
-                            Err(e) => s.invalid(e.to_string()),
+                            Ok(f) => s.push(Source::Bluetooth, f),
+                            Err(e) => s.invalid(Source::Bluetooth, e.to_string()),
                         });
-                        if waiting {
-                            waiting = false;
+                        if silent {
+                            silent = false;
                             set_state(shared, ctx, LinkState::Streaming(name.clone()));
                         }
                         ctx.request_repaint();
@@ -202,8 +193,8 @@ async fn session(
                         if !peripheral.is_connected().await.unwrap_or(false) {
                             return Ok(SessionEnd::Dropped("Sensor disconnected".into()));
                         }
-                        waiting = true;
-                        set_state(shared, ctx, LinkState::Connecting(format!("{name}: connected, waiting for data")));
+                        silent = true;
+                        set_state(shared, ctx, LinkState::NoData(name.clone()));
                     }
                 }
             }

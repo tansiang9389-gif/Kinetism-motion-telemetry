@@ -14,6 +14,10 @@ Elbow flexion is also measurable, using the phone app's force and MMT model, so
 the biceps appear in the progress view. Patients and records are shared with the
 Flutter phone app through the same Firestore project.
 
+Two kinds of sensor hardware are supported: the `Physio_A` Bluetooth pair
+(upper arm + forearm), or a single Wi-Fi sensor running the root PlatformIO
+firmware (`KIN1` UDP packets).
+
 > Prototype software. It is not a clinically validated medical device.
 > Automatic MMT grades and load estimates are suggestions for physiotherapist
 > review, not diagnoses.
@@ -30,15 +34,21 @@ Flutter phone app through the same Firestore project.
 cargo run --release
 ```
 
-4. Press **Connect Physio_A** (top right). The status chip shows the packet
-   rate (about 20 Hz) and the status bar shows whether the forearm sensor is
-   streaming.
+4. Press **Connect sensor** (top right) and choose:
+   * **Bluetooth · Physio_A pair**: the status chip shows about 20 Hz, and the
+     status bar shows whether the forearm sensor is streaming.
+   * **Wi-Fi · KIN1 sensor**: the chip shows the sensor's IP address and about
+     100 Hz, and the status bar shows battery and IMU accuracy. On first use,
+     Windows asks whether to allow Kinetism Desktop through the firewall: click
+     **Allow**.
 
-No sensor at hand? Press **Simulator**. A virtual arm generates real
-quaternion packets that go through the same parser and calibration as BLE
+No sensor at hand? Choose **Simulator**. A virtual arm generates real
+quaternion packets that go through the same parser and calibration as sensor
 data. In the game, the mouse pointer drives the virtual hand.
 
-## Sensor placement
+## Sensors
+
+### Bluetooth pair (`Physio_A`)
 
 | Sensor | Placement | Payload position |
 | --- | --- | --- |
@@ -51,6 +61,29 @@ No firmware change is needed. If the slave has not synced, the master sends
 zeros for the forearm. Shoulder abduction still works with the upper-arm sensor
 alone; the elbow check and the hand position then fall back to a straight-arm
 estimate.
+
+If the chip shows **"Physio_A connected · no readings"**, the master accepted
+the connection but has nothing to send. Its serial log (USB, 115200 baud)
+then shows `bno1_ok=0`, meaning the BNO080 does not answer on I2C. Check the
+master's IMU wiring (3V3, GND, SDA = GPIO 6, SCL = GPIO 7, address `0x4B`) and
+power-cycle the sensor.
+
+### Wi-Fi sensor (`KIN1` over UDP)
+
+The root PlatformIO firmware ([src/main.cpp](../../src/main.cpp)) sends one
+64-byte `KIN1` packet per sample (100 Hz) to `UDP_HOST:4210`. Set `UDP_HOST`
+in `include/secrets.h` to this PC's IPv4 address; the app shows it in the
+tooltip while it waits for packets.
+
+* One IMU only: strap it on the **lateral upper arm**. Shoulder abduction and
+  the game work. Elbow flexion needs the Bluetooth pair.
+* The app follows the first board that sends, and forwards about 25 frames/s
+  so calibration and smoothing behave like the 20 Hz Bluetooth stream.
+* Only one program can listen on the port: close the Python PC dashboard
+  (`python -m pc.app.main`) first.
+* Windows Firewall must allow inbound UDP for the app. On a *Public* network,
+  dismissing the first-use prompt creates a **Block** rule. Fix it in Windows
+  Security → Firewall & network protection → Allow an app through firewall.
 
 ## Calibration (every session, ~10 s)
 
@@ -66,6 +99,7 @@ resolve both:
 Step 2 can be skipped (**elevation only**). Elevation stays exact, but the
 heading is then estimated from the sensor mounting, so the plane check and
 game control are less precise. Recalibrate whenever the straps move.
+Switching to another sensor source always starts a new calibration.
 
 ## Shoulder abduction
 
@@ -167,7 +201,9 @@ phone records appear here. The top-right chip shows the sync state.
 | `KINETISM_OFFLINE=1` | Local storage only, no Firestore |
 | `KINETISM_FIREBASE_PROJECT` | Use another Firestore project |
 | `KINETISM_DATA_DIR` | Folder for the local cache |
-| `KINETISM_SIM=1` | Start with the simulator on |
+| `KINETISM_SOURCE=wifi\|bluetooth\|sim` | Connect this sensor source at startup |
+| `KINETISM_UDP_PORT` | UDP port for the Wi-Fi sensor (default 4210) |
+| `KINETISM_SIM=1` | Same as `KINETISM_SOURCE=sim` |
 | `KINETISM_DEMO=<scenario>` | Synthetic offline demo: `patients`, `hub`, `calibrate`, `measure`, `play`, `game0`, `game1`, `game2`, `result`, `progress`, `progress-patient`, `records`. Never syncs to Firestore. |
 | `KINETISM_SCREENSHOT=<file.png>` | With `KINETISM_DEMO`: save a screenshot, then exit |
 | `KINETISM_SCREENSHOT_DELAY=<s>` | Screenshot delay (default 6 s) |
@@ -180,17 +216,21 @@ cargo test
 cargo clippy --all-targets
 ```
 
-The unit tests cover packet parsing, calibration with arbitrary sensor
-mounting and heading (both arms), MMT grading, the phone app's force model,
-the Firestore codec (including phone-app documents), apple tracing, PNF
-slicing/bombs/combos, unlocks and streaks.
+The unit tests cover Bluetooth and `KIN1` packet parsing (including a packet
+captured from a real Wi-Fi sensor), sensor-source switching, calibration with
+arbitrary sensor mounting and heading (both arms), MMT grading, the phone app's
+force model, the Firestore codec (including phone-app documents), apple
+tracing, PNF slicing/bombs/combos, unlocks and streaks.
 
 ## Troubleshooting
 
 | Symptom | Fix |
 | --- | --- |
 | `Physio_A not found` | Switch the master on and disconnect the phone app. Check that Bluetooth is on in Windows. |
+| *Physio_A connected · no readings* | The master's IMU is not reporting (serial log `bno1_ok=0`) and no slave is synced. Check the IMU wiring and power-cycle the master. |
 | Status bar says *Forearm sensor missing* | The slave has not synced to the master (master serial log `[RX] chunks received`). Shoulder abduction still works. |
-| Invalid packets increase | Firmware payload changed; it must be 8 comma-separated values. |
+| Invalid packets increase | Firmware payload changed; it must be 8 comma-separated values (Bluetooth) or 64-byte `KIN1` packets (Wi-Fi). |
+| *Wi-Fi: waiting for packets* | Sensor off or on another network, `UDP_HOST` is not this PC's IP, or Windows Firewall blocks the app (see [Wi-Fi sensor](#wi-fi-sensor-kin1-over-udp)). |
+| *Sensor error: Cannot listen on UDP port 4210* | Another program uses the port; close the Python PC dashboard. |
 | Angle drifts after several minutes | Game-rotation-vector heading drift: press **Recalibrate**. |
 | Sync chip shows an error | Check the internet connection and Firestore rules. Records stay queued locally. |

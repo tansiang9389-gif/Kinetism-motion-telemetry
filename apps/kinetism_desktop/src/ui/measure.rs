@@ -150,7 +150,7 @@ impl KinetismApp {
             ui::tinted_card(ui, theme::WARN, |ui| {
                 ui.label(
                     RichText::new(
-                        "Connect Physio_A (top right) or start the Simulator to calibrate.",
+                        "Connect a sensor (top right: Bluetooth, Wi-Fi or Simulator) to calibrate.",
                     )
                     .color(theme::WARN),
                 );
@@ -270,8 +270,10 @@ impl KinetismApp {
         if stale {
             ui::tinted_card(ui, theme::WARN, |ui| {
                 ui.label(
-                    RichText::new("No live sensor data. Connect Physio_A or start the Simulator.")
-                        .color(theme::WARN),
+                    RichText::new(
+                        "No live sensor data. Connect a sensor (top right) or start the Simulator.",
+                    )
+                    .color(theme::WARN),
                 );
             });
         }

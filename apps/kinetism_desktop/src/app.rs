@@ -4,7 +4,7 @@ use crate::clinical::{Anthropometrics, Movement, Muscle, Side};
 use crate::game::fx::Fx;
 use crate::game::{Game, GameEvent, Stage};
 use crate::model::{GameLevel, GameSession, Patient};
-use crate::sensor::{LinkState, SensorHub};
+use crate::sensor::{LinkState, SensorHub, Source};
 use crate::sim::{SimDriver, SimInput};
 use crate::store::{DataStore, firestore};
 use crate::theme;
@@ -159,7 +159,10 @@ impl KinetismApp {
             project.clone(),
             data_dir,
         );
-        let sensor = SensorHub::new(runtime.handle(), cc.egui_ctx.clone());
+        let udp_port = env("KINETISM_UDP_PORT")
+            .and_then(|p| p.parse().ok())
+            .unwrap_or(crate::sensor::udp::DEFAULT_PORT);
+        let sensor = SensorHub::new(runtime.handle(), cc.egui_ctx.clone(), udp_port);
         let side = store.settings.side;
         let voice = Voice::new(store.settings.voice && demo.is_none());
         let mut app = Self {
@@ -202,8 +205,13 @@ impl KinetismApp {
             store,
             sensor,
         };
-        if env("KINETISM_SIM").is_some() || app.demo.is_some() {
-            app.sensor.start_simulation();
+        let start_source = if app.demo.is_some() || env("KINETISM_SIM").is_some() {
+            Some(Source::Simulator)
+        } else {
+            env("KINETISM_SOURCE").and_then(|s| Source::from_key(&s))
+        };
+        if let Some(source) = start_source {
+            app.switch_source(source);
         }
         if let Some(id) = app.store.settings.selected_patient.clone()
             && app.store.patient(&id).is_some()
@@ -282,7 +290,20 @@ impl KinetismApp {
     }
 
     pub fn simulated(&self) -> bool {
-        self.sensor.state() == LinkState::Simulated
+        self.sensor.source() == Source::Simulator
+    }
+
+    /// Change the sensor input. A different sensor (or mounting) needs a new calibration.
+    pub fn switch_source(&mut self, source: Source) {
+        match source {
+            Source::Bluetooth => self.sensor.connect_bluetooth(),
+            Source::Wifi => self.sensor.connect_wifi(),
+            Source::Simulator => self.sensor.start_simulation(),
+            Source::None => self.sensor.disconnect(),
+        }
+        if source != Source::None {
+            self.tracker.recalibrate();
+        }
     }
 
     fn top_bar(&mut self, ui: &mut egui::Ui) {
@@ -376,37 +397,62 @@ impl KinetismApp {
 
     fn sensor_controls(&mut self, ui: &mut egui::Ui) {
         let state = self.sensor.state();
+        let source = self.sensor.source();
         let stats = self.sensor.stats();
-        if state == LinkState::Simulated {
-            if ui.button("Stop simulator").clicked() {
-                self.sensor.stop_simulation();
-            }
-        } else if ui
-            .button("Simulator")
-            .on_hover_text("Demo without hardware: a virtual arm generates real sensor packets.")
-            .clicked()
-        {
-            self.sensor.start_simulation();
-        }
-        match &state {
-            LinkState::Idle | LinkState::Error(_) => {
-                if ui::primary(ui, "Connect Physio_A").clicked() {
-                    self.sensor.connect();
+        let port = self.sensor.udp_port;
+        let mut choice: Option<Source> = None;
+        if source == Source::None || state.is_idle() {
+            let button =
+                egui::Button::new(RichText::new("Connect sensor").strong().color(theme::BG))
+                    .fill(theme::ACCENT)
+                    .min_size(egui::vec2(0.0, 40.0));
+            egui::containers::menu::MenuButton::from_button(button).ui(ui, |ui| {
+                ui.set_min_width(300.0);
+                if ui
+                    .button("Bluetooth · Physio_A pair (upper arm + forearm)")
+                    .clicked()
+                {
+                    choice = Some(Source::Bluetooth);
+                    ui.close();
                 }
-            }
-            LinkState::Simulated => {}
-            _ => {
-                if ui.button("Disconnect").clicked() {
-                    self.sensor.disconnect();
+                if ui
+                    .button(format!("Wi-Fi · KIN1 sensor, UDP {port} (single IMU)"))
+                    .clicked()
+                {
+                    choice = Some(Source::Wifi);
+                    ui.close();
                 }
+                ui.separator();
+                if ui
+                    .button("Simulator (no hardware)")
+                    .on_hover_text("A virtual arm generates real sensor packets.")
+                    .clicked()
+                {
+                    choice = Some(Source::Simulator);
+                    ui.close();
+                }
+            });
+        } else {
+            let label = if source == Source::Simulator {
+                "Stop simulator"
+            } else {
+                "Disconnect"
+            };
+            if ui.button(label).clicked() {
+                choice = Some(Source::None);
             }
         }
         let (text, color) = match &state {
             LinkState::Idle => ("Sensor: not connected".to_string(), theme::MUTED),
             LinkState::Scanning => ("Scanning for Physio_A…".to_string(), theme::WARN),
             LinkState::Connecting(n) => (format!("Connecting {n}…"), theme::WARN),
-            LinkState::Streaming(n) => (format!("● {n} {:.0} Hz", stats.rate_hz), theme::GOOD),
+            LinkState::Streaming(n) => match stats.device_rate_hz {
+                Some(rate) => (format!("● {n} · {rate:.0} Hz"), theme::GOOD),
+                None => (format!("● {n} {:.0} Hz", stats.rate_hz), theme::GOOD),
+            },
+            LinkState::NoData(n) => (format!("{n} connected · no readings"), theme::WARN),
             LinkState::Reconnecting(m) => (format!("Reconnecting: {m}"), theme::WARN),
+            LinkState::Listening(m) => (format!("Wi-Fi: waiting for packets ({m})"), theme::WARN),
             LinkState::Simulated => (
                 format!("● Simulator {:.0} Hz", stats.rate_hz),
                 theme::ACCENT,
@@ -414,11 +460,31 @@ impl KinetismApp {
             LinkState::Error(_) => ("Sensor error".to_string(), theme::ERROR),
         };
         let r = ui::chip(ui, &text, color);
-        if let LinkState::Error(e) = &state {
-            r.on_hover_text(e);
+        match &state {
+            LinkState::Error(e) => {
+                r.on_hover_text(e);
+            }
+            LinkState::NoData(n) => {
+                r.on_hover_text(format!(
+                    "{n} accepted the connection but sends no readings: its IMU is not reporting and no forearm data reaches it. \
+                     Switch the sensor off and on. If it persists, check the master's serial log for 'BNO1: FAILED' and that the slave LED is solid (synced)."
+                ));
+            }
+            LinkState::Listening(_) => {
+                let ip = crate::sensor::udp::local_ip()
+                    .map_or("this PC's IP".to_string(), |ip| ip.to_string());
+                r.on_hover_text(format!(
+                    "No KIN1 packets yet. Check that the Wi-Fi sensor is switched on and joined the same network, \
+                     that its UDP_HOST is {ip} (port {port}), and that Windows Firewall allows Kinetism Desktop."
+                ));
+            }
+            _ => {}
         }
         if state.is_busy() {
             ui.spinner();
+        }
+        if let Some(source) = choice {
+            self.switch_source(source);
         }
     }
 
@@ -432,13 +498,30 @@ impl KinetismApp {
             };
             ui.label(ui::small(cal));
             ui.separator();
-            ui.label(ui::small(if stats.packets == 0 {
+            let wifi = self.sensor.source() == Source::Wifi;
+            let sensors = if stats.packets == 0 {
                 "No sensor data yet".to_string()
+            } else if wifi {
+                format!(
+                    "Wi-Fi IMU (upper arm){}{}",
+                    stats
+                        .battery_percent
+                        .map_or(String::new(), |b| format!(" · battery {b}%")),
+                    stats
+                        .accuracy
+                        .map_or(String::new(), |a| format!(" · accuracy {a}/3"))
+                )
             } else if stats.forearm_present {
                 "Upper arm ✓  Forearm ✓".to_string()
             } else {
                 "Upper arm ✓  Forearm sensor missing (shoulder still works)".to_string()
-            }));
+            };
+            let sensors = ui.label(ui::small(sensors));
+            if wifi {
+                sensors.on_hover_text(
+                    "One IMU: shoulder abduction and the game work. Elbow flexion needs the two-sensor Bluetooth pair.",
+                );
+            }
             ui.separator();
             ui.label(ui::small(format!(
                 "{} packets · {} invalid",
@@ -452,11 +535,29 @@ impl KinetismApp {
                 ui.separator();
                 ui.label(RichText::new(err).size(13.0).color(theme::WARN));
             }
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                ui.label(ui::small(
-                    "Prototype · not a clinically validated device · MMT grades are suggestions for physiotherapist review",
-                ));
-            });
+            // Right-aligned disclaimer, shortened (full text on hover) when space is tight.
+            const FULL: &str = "Prototype · not a clinically validated device · MMT grades are suggestions for physiotherapist review";
+            const SHORT: &str = "Prototype · not clinically validated";
+            let fits = |ui: &egui::Ui, text: &str| {
+                let width = ui
+                    .painter()
+                    .layout_no_wrap(text.to_string(), egui::FontId::proportional(13.0), theme::MUTED)
+                    .size()
+                    .x;
+                width + 24.0 <= ui.available_width()
+            };
+            let disclaimer = if fits(ui, FULL) {
+                Some(FULL)
+            } else if fits(ui, SHORT) {
+                Some(SHORT)
+            } else {
+                None
+            };
+            if let Some(text) = disclaimer {
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    ui.label(ui::small(text)).on_hover_text(FULL);
+                });
+            }
         });
     }
 
@@ -519,7 +620,7 @@ impl KinetismApp {
                 });
             });
         if !open {
-            self.sensor.stop_simulation();
+            self.switch_source(Source::None);
         }
     }
 

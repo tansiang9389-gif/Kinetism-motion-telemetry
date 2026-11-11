@@ -55,9 +55,10 @@ lets you walk through all 9 steps in the browser without Firebase, physical BLE 
 ## Kinetism Desktop (Rust): shoulder abduction, PNF game, muscle progress
 
 [apps/kinetism_desktop](apps/kinetism_desktop/README.md) is a Windows desktop
-app, written in Rust with egui, for the same `Physio_A` sensors. It connects
-over Bluetooth LE directly from the PC and shares patients and records with the
-phone app through Firestore.
+app, written in Rust with egui, for the same sensors. It connects directly from
+the PC to the `Physio_A` pair over Bluetooth LE, or to a single Wi-Fi sensor
+running the root PlatformIO firmware (`KIN1` UDP). It shares patients and
+records with the phone app through Firestore.
 
 * **Shoulder abduction**: two-pose calibration, live elevation angle with
   plane and elbow checks, estimated arm load and torque, an automatic MMT
@@ -124,6 +125,7 @@ Arduino/library setup before it can be treated as a buildable firmware project.
 The root PlatformIO project instead builds the **Wi-Fi/UDP** firmware used by
 the PC dashboard. Its binary UDP packets are not the Flutter BLE payload.
 Do not flash that firmware expecting the phone's BLE tracker to read it.
+Kinetism Desktop reads both: the BLE payload and the `KIN1` UDP packets.
 The synthetic browser preview is not a synchronised clinical PC portal.
 
 ## What the Wi-Fi prototype measures
