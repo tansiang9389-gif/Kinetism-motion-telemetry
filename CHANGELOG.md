@@ -32,6 +32,9 @@ All notable changes to this project are documented in this file.
   - Patient data stays trustworthy:
     - Measurements and the game pause when upper-arm data stops, so a frozen
       angle or a sensor dropout is never saved as a result.
+    - After a pause or a sensor gap of a quarter of a second or more, the game
+      picks up from where the hand really is, so no fruit is sliced and no
+      bomb is hit across the gap.
     - Opening another patient, or another Wi-Fi sensor taking over, always
       starts a new calibration.
     - Grades and posture notes are judged at the peak of the attempt.
@@ -46,7 +49,7 @@ All notable changes to this project are documented in this file.
       as a backup instead of being replaced.
 - Download the app without installing Rust: every `v*` tag publishes
   `kinetism-desktop-<tag>-windows-x64.zip` on GitHub Releases. Pull requests
-  that touch the app run its 114 unit tests, formatting and lint checks on
+  that touch the app run its 116 unit tests, formatting and lint checks on
   Windows, with a pinned Rust toolchain and pinned actions.
 - `firmware/physio-slave`: a buildable PlatformIO version of the Physio_A
   forearm (slave) sensor firmware. It starts streaming even when its IMU only
