@@ -52,6 +52,37 @@ The Flutter app implements the 9-step physiotherapist measurement and record-log
 The [synthetic browser preview](apps/medical_device_app/README.md#local-synthetic-preview)
 lets you walk through all 9 steps in the browser without Firebase, physical BLE sensors, or external services.
 
+## Kinetism Desktop (Rust): shoulder abduction, PNF game, muscle progress
+
+[apps/kinetism_desktop](apps/kinetism_desktop/README.md) is a Windows desktop
+app, written in Rust with egui, for the same `Physio_A` sensors. It connects
+over Bluetooth LE directly from the PC and shares patients and records with the
+phone app through Firestore.
+
+* **Shoulder abduction**: two-pose calibration, live elevation angle with
+  plane and elbow checks, estimated arm load and torque, an automatic MMT
+  suggestion (grades 0-3) and physiotherapist confirmation of grades 4-5.
+* **Fruit PNF game**: Fruit-Ninja-style levels driven by the patient's hand.
+  Level 0 *Draw the Apple* (trace an apple outline), Level 1 *PNF D1*, Level 2
+  *PNF D2*. Includes combos, bombs off the diagonal, stars, a daily streak,
+  voice encouragement and an 80% score to unlock the next level.
+* **Progress on muscle**: body map coloured by MMT grade, daily MMT level grid,
+  MMT and game trends, and draft next-goal guidance per grade. There are
+  separate patient and physiotherapist views.
+
+```powershell
+cd apps\kinetism_desktop
+cargo run --release
+```
+
+A built-in simulator (mouse-driven virtual arm) allows demos without hardware.
+
+| Level 1 - PNF D1 | Shoulder abduction | Progress on muscle |
+| --- | --- | --- |
+| [<img src="docs/desktop/game-d1.png" alt="Fruit PNF game Level 1: slicing fruit along the D1 diagonal with combo, bomb and basket" width="260">](docs/desktop/game-d1.png) | [<img src="docs/desktop/measure.png" alt="Live shoulder abduction measurement with angle, peak, load, torque and MMT suggestion" width="260">](docs/desktop/measure.png) | [<img src="docs/desktop/progress.png" alt="Physio progress view with body map, daily MMT level grid and trends" width="260">](docs/desktop/progress.png) |
+
+Screenshots use synthetic demo data (`KINETISM_DEMO`), never real patients.
+
 ## App screenshots
 
 Select any screenshot to view it at full size:
@@ -72,6 +103,7 @@ Select any screenshot to view it at full size:
 | [pc](pc) | Local Python telemetry receiver and both browser dashboards |
 | [tests](tests) | PC protocol regressions and saved paired-sensor Arduino reference sketches |
 | [apps/medical_device_app](apps/medical_device_app) | Refined Flutter source, native projects, tests and editable branding |
+| [apps/kinetism_desktop](apps/kinetism_desktop) | Rust desktop app: BLE sensor link, shoulder abduction, Fruit PNF game, muscle progress |
 | [docs/refinement](docs/refinement/design-audit-kinetism.md) | Refinement review, synthetic browser evidence and screenshots |
 
 The original upload ZIP is retained as a sanitised **source-only** archive.
