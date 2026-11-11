@@ -24,17 +24,26 @@ firmware (`KIN1` UDP packets).
 
 ## Run it
 
-1. Install Rust with [rustup](https://rustup.rs) (stable, MSVC toolchain).
-   Visual Studio Build Tools with the C++ workload must be installed.
-2. Switch the sensors on. If the phone app is connected to `Physio_A`,
-   disconnect it first: a connected sensor stops advertising.
-3. From this folder:
+Download the app or build it from source:
+
+* **Download (no Rust needed):** every version tag (`v*`) publishes
+  `kinetism-desktop-<tag>-windows-x64.zip` on the
+  [Releases](https://github.com/tansiang9389-gif/Kinetism-motion-telemetry/releases)
+  page. Unzip it and run `kinetism_desktop.exe`. The exe is unsigned, so
+  Windows SmartScreen may warn: choose **More info**, then **Run anyway**.
+* **From source:** install Rust with [rustup](https://rustup.rs) (stable, MSVC
+  toolchain) and Visual Studio Build Tools with the C++ workload, then run
+  this from this folder:
 
 ```powershell
 cargo run --release
 ```
 
-4. Press **Connect sensor** (top right) and choose:
+Then:
+
+1. Switch the sensors on. If the phone app is connected to `Physio_A`,
+   disconnect it first: a connected sensor stops advertising.
+2. Press **Connect sensor** (top right) and choose:
    * **Bluetooth · Physio_A pair**: the status chip shows about 20 Hz, and the
      status bar shows whether the forearm sensor is streaming.
    * **Wi-Fi · KIN1 sensor**: the chip shows the sensor's IP address and about
@@ -219,8 +228,14 @@ reached Firestore can be recovered from it) and warns in the status bar.
 
 ```powershell
 cargo test
-cargo clippy --all-targets
+cargo fmt --check
+cargo clippy --all-targets -- -D warnings
 ```
+
+GitHub Actions ([`kinetism-desktop.yml`](../../.github/workflows/kinetism-desktop.yml))
+runs the same checks on Windows for every pull request that touches this app.
+Pushing a `v*` tag also builds the release zip and attaches it to a GitHub
+Release.
 
 The unit tests cover Bluetooth and `KIN1` packet parsing (including a packet
 captured from a real Wi-Fi sensor), sensor-source switching, calibration with
