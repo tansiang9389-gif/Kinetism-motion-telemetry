@@ -266,7 +266,8 @@ impl PnfRound {
         });
     }
 
-    /// Forget the last hand position: the next update slices from where the hand is then.
+    /// Forget the last hand position: the hand moved unseen, so the next update
+    /// only re-anchors the blade where the hand is then, without cutting there.
     pub fn interrupt(&mut self) {
         self.prev = None;
     }
@@ -289,37 +290,40 @@ impl PnfRound {
                 }
             }
             Phase::Swipe => {
-                let from = self.prev.unwrap_or(hand);
-                let motion = sub(hand, from);
-                let moved = (motion[0] * motion[0] + motion[1] * motion[1]).sqrt();
-                for fruit in self.fruits.iter_mut().filter(|f| !f.sliced) {
-                    if seg_point_distance(from, hand, fruit.pos) <= fruit.radius + 0.02 {
-                        fruit.sliced = true;
-                        let along = if moved > 1e-6 {
-                            let t = self.path.tangent(0.6);
-                            (motion[0] * t[0] + motion[1] * t[1]) / moved
-                        } else {
-                            1.0
-                        };
-                        let clean = along > 0.3;
-                        if clean {
-                            self.rep_clean_slices += 1;
+                // `prev` is only empty right after an interrupt: landing on a
+                // fruit or bomb after an unseen move is not a cut.
+                if let Some(from) = self.prev {
+                    let motion = sub(hand, from);
+                    let moved = (motion[0] * motion[0] + motion[1] * motion[1]).sqrt();
+                    for fruit in self.fruits.iter_mut().filter(|f| !f.sliced) {
+                        if seg_point_distance(from, hand, fruit.pos) <= fruit.radius + 0.02 {
+                            fruit.sliced = true;
+                            let along = if moved > 1e-6 {
+                                let t = self.path.tangent(0.6);
+                                (motion[0] * t[0] + motion[1] * t[1]) / moved
+                            } else {
+                                1.0
+                            };
+                            let clean = along > 0.3;
+                            if clean {
+                                self.rep_clean_slices += 1;
+                            }
+                            self.points += if clean { 15 } else { 8 };
+                            events.push(PnfEvent::Sliced {
+                                pos: fruit.pos,
+                                kind: fruit.kind,
+                                clean,
+                            });
                         }
-                        self.points += if clean { 15 } else { 8 };
-                        events.push(PnfEvent::Sliced {
-                            pos: fruit.pos,
-                            kind: fruit.kind,
-                            clean,
-                        });
                     }
-                }
-                for bomb in self.bombs.iter_mut().filter(|b| !b.hit) {
-                    if seg_point_distance(from, hand, bomb.pos) <= bomb.radius {
-                        bomb.hit = true;
-                        self.rep_bombs += 1;
-                        self.bombs_hit += 1;
-                        self.points -= 20;
-                        events.push(PnfEvent::Bomb(bomb.pos));
+                    for bomb in self.bombs.iter_mut().filter(|b| !b.hit) {
+                        if seg_point_distance(from, hand, bomb.pos) <= bomb.radius {
+                            bomb.hit = true;
+                            self.rep_bombs += 1;
+                            self.bombs_hit += 1;
+                            self.points -= 20;
+                            events.push(PnfEvent::Bomb(bomb.pos));
+                        }
                     }
                 }
                 self.dev_sum += self.path.distance(hand);
@@ -511,5 +515,31 @@ mod tests {
             round.update(round.path.start, 1.0).is_empty(),
             "a finished round ignores input"
         );
+    }
+
+    #[test]
+    fn after_an_interrupt_the_hand_reappearing_on_a_fruit_or_bomb_cuts_nothing() {
+        let mut round = PnfRound::new(GameLevel::PnfD1, Side::Right, 1.0, 1, true, 5);
+        round.update(round.path.start, 0.05);
+        assert_eq!(round.phase, Phase::Swipe);
+        let (fruit, bomb) = (round.fruits[1].pos, round.bombs[0].pos);
+        // Paused or a sensor gap: the hand moved unseen and reappears on a bomb,
+        // then (after another gap) on a fruit.
+        for landing in [bomb, fruit] {
+            round.interrupt();
+            assert!(
+                round.update(landing, 0.05).is_empty(),
+                "reappearing at {landing:?} is not a cut"
+            );
+        }
+        assert!(round.fruits.iter().all(|f| !f.sliced));
+        assert_eq!((round.bombs_hit, round.points), (0, 0));
+        // Moving on from there, the blade cuts as usual.
+        let events = round.update(round.path.end, 0.05);
+        assert!(
+            events.iter().any(|e| matches!(e, PnfEvent::Sliced { .. })),
+            "{events:?}"
+        );
+        assert!(events.contains(&PnfEvent::ReachedTop));
     }
 }

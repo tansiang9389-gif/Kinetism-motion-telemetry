@@ -723,7 +723,9 @@ impl KinetismApp {
     /// follows fresh upper-arm data: during a pause or a gap in the frames the
     /// hand may move unseen, so the stroke restarts instead of slicing across
     /// the gap, and a dropout cannot time out reps and save a low score.
-    fn update_game(&mut self, dt: f64) {
+    /// `resumed` says the frames just came back after such a gap, which no app
+    /// frame may have seen when it was barely longer than the limit.
+    fn update_game(&mut self, dt: f64, resumed: bool) {
         self.play.fx.update(dt);
         let practice = self.practice_only();
         let following = !self.play.paused && self.tracker.has_fresh_data();
@@ -736,8 +738,13 @@ impl KinetismApp {
         if game.stage == Stage::Finished {
             return;
         }
-        let Some(hand) = hand else {
+        if hand.is_none() || resumed {
+            // The hand moved unseen: the next stroke, and the blade trail drawn
+            // for it, start where the hand is seen again.
             game.interrupt();
+            self.play.fx.trail.clear();
+        }
+        let Some(hand) = hand else {
             return;
         };
         if game.stage == Stage::Playing {
@@ -763,8 +770,8 @@ impl KinetismApp {
         let frames = self.sensor.drain();
         // After draining, so frames from a new board are never fed to the old calibration.
         self.note_wifi_sender(self.sensor.stats().wifi_sender);
-        self.tracker.feed(&frames);
-        self.update_game(dt);
+        let resumed = self.tracker.feed(&frames);
+        self.update_game(dt, resumed);
     }
 }
 
@@ -1131,40 +1138,57 @@ pub(crate) mod tests {
 
     #[test]
     fn a_short_gap_in_the_sensor_frames_restarts_the_stroke() {
-        let dir = test_dir("stall");
-        let mut app = test_app(&dir);
-        app.store.upsert_patient(patient("p1"));
-        app.select_patient("p1", false);
-        let mut arm = SimArm::new(Side::Right);
-        calibrate_wifi(&mut app, &mut arm);
-        app.play.bombs = false;
-        app.start_game(GameLevel::PnfD1);
-        wifi(&mut app, &arm, 1, 3.1);
-        let path = pnf_path(&app);
-        let mut reach = |app: &mut KinetismApp, to: Pt| {
-            arm.set_hand_target(to[0], to[1]);
-            wifi(app, &arm, 12, 0.05);
-        };
-        reach(&mut app, path.start);
-        assert!(
-            matches!(&round(&app).mode, Mode::Pnf(r) if r.phase == Phase::Swipe),
-            "rep 1 starts at the basket"
-        );
+        // An app frame usually runs inside the gap and sees the data go stale.
+        // A gap just past the limit can fall between two app frames: then only
+        // the frame that ends it tells the game.
+        for (gap_ms, app_frame_inside_the_gap) in [(400, true), (260, false)] {
+            let dir = test_dir("stall");
+            let mut app = test_app(&dir);
+            app.store.upsert_patient(patient("p1"));
+            app.select_patient("p1", false);
+            let mut arm = SimArm::new(Side::Right);
+            calibrate_wifi(&mut app, &mut arm);
+            app.play.bombs = false;
+            app.start_game(GameLevel::PnfD1);
+            wifi(&mut app, &arm, 1, 3.1);
+            let path = pnf_path(&app);
+            // One frame per app frame, as the Wi-Fi board forwards them (25 Hz):
+            // the hand smoother then really runs between game updates.
+            let mut reach = |app: &mut KinetismApp, to: Pt, frames: usize| {
+                arm.set_hand_target(to[0], to[1]);
+                for _ in 0..frames {
+                    wifi(app, &arm, 1, 0.04);
+                }
+            };
+            reach(&mut app, path.start, 12);
+            assert!(
+                matches!(&round(&app).mode, Mode::Pnf(r) if r.phase == Phase::Swipe),
+                "rep 1 starts at the basket"
+            );
 
-        // 0.4 s without frames, far below the 1.5 s "no live data" pause,
-        // while the hand moves to the top.
-        app.tracker.last_frame_at = Instant::now().checked_sub(Duration::from_millis(400));
-        app.advance(0.05);
-        reach(&mut app, path.end);
-        let Mode::Pnf(r) = &round(&app).mode else {
-            unreachable!("a PNF level")
-        };
-        assert_eq!(r.phase, Phase::Return, "the top was reached");
-        assert!(
-            r.fruits.iter().all(|f| !f.sliced),
-            "nothing is sliced across the gap"
-        );
-        let _ = std::fs::remove_dir_all(&dir);
+            // A gap far below the 1.5 s "no live data" pause, while the hand
+            // moves to the top.
+            app.tracker.last_frame_at = Instant::now().checked_sub(Duration::from_millis(gap_ms));
+            if app_frame_inside_the_gap {
+                app.advance(0.05);
+            }
+            reach(&mut app, path.end, 1);
+            assert_eq!(
+                app.play.fx.trail.len(),
+                1,
+                "the blade is drawn from where the hand reappears"
+            );
+            reach(&mut app, path.end, 11);
+            let Mode::Pnf(r) = &round(&app).mode else {
+                unreachable!("a PNF level")
+            };
+            assert_eq!(r.phase, Phase::Return, "the top was reached");
+            assert!(
+                r.fruits.iter().all(|f| !f.sliced),
+                "nothing is sliced across a {gap_ms} ms gap"
+            );
+            let _ = std::fs::remove_dir_all(&dir);
+        }
     }
 
     #[test]

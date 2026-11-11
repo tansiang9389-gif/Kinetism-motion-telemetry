@@ -182,9 +182,9 @@ screen right) and a faint body outline shows the patient's position.
 * **Bombs** sit off the diagonal to discourage compensation (-20 points, combo
   reset, no game over). They can be switched off.
 * **Pause**, or a gap of more than a quarter of a second in the sensor
-  frames, holds the round. The blade restarts from wherever the hand is when
-  play resumes, so nothing is sliced across the gap. After 1.5 s without
-  frames the canvas says the game is paused.
+  frames, holds the round. The blade picks up from wherever the hand is when
+  play resumes, without cutting there, so nothing is sliced across the gap.
+  After 1.5 s without frames the canvas says the game is paused.
 * **Adaptive size**: the apple size and the diagonal length scale with the
   patient's best recorded shoulder abduction.
 * **Streak**: consecutive days with at least one game.

@@ -169,11 +169,22 @@ impl ArmTracker {
         }
     }
 
-    pub fn feed(&mut self, frames: &[TimedFrame]) {
+    /// Returns true when upper-arm frames resumed after a gap of at least
+    /// [`FRESH_DATA_SECONDS`]: the hand moved unseen, so its jump is no stroke.
+    pub fn feed(&mut self, frames: &[TimedFrame]) -> bool {
+        let mut resumed = false;
         for tf in frames {
             let Some(upper) = tf.frame.upper else {
                 continue;
             };
+            // After a gap the hand may have jumped: show it where it is instead
+            // of gliding across the gap, which the game would read as a stroke.
+            if self.last_frame_at.is_some_and(|prev| {
+                tf.at.saturating_duration_since(prev).as_secs_f32() >= FRESH_DATA_SECONDS
+            }) {
+                self.smoother.reset();
+                resumed = true;
+            }
             self.last_frame_at = Some(tf.at);
             match self.step {
                 CalStep::CapturingRest | CalStep::CapturingForward => {
@@ -206,6 +217,7 @@ impl ArmTracker {
                 self.pose = Some(pose);
             }
         }
+        resumed
     }
 
     fn finish_capture(&mut self) {
@@ -749,5 +761,40 @@ mod tests {
                 "newest upper-arm frame {ms} ms old"
             );
         }
+    }
+
+    #[test]
+    fn after_a_gap_the_hand_jumps_to_the_arm_instead_of_gliding_across() {
+        let mut sim = SimArm::new(Side::Right);
+        let mut tracker = ArmTracker::new(Side::Right);
+        calibrate(&mut tracker, &mut sim, false);
+        let distance = |a: Pt, b: Pt| ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2)).sqrt();
+
+        // A steady 25 Hz stream is smoothed: one frame moves the hand part of the way.
+        let steady = tracker.last_frame_at.expect("calibration frames") + Duration::from_millis(40);
+        (sim.elevation_deg, sim.plane_deg) = (90.0, 0.0);
+        let resumed = tracker.feed(&[TimedFrame {
+            frame: frame(&sim, false),
+            at: steady,
+        }]);
+        assert!(!resumed, "no gap in a steady stream");
+        let (hand, arm) = (
+            tracker.hand.expect("hand"),
+            tracker.pose.expect("pose").hand,
+        );
+        assert!(distance(hand, arm) > 0.1, "smoothed: {hand:?} vs {arm:?}");
+
+        // After 0.4 s without frames the hand is shown where the arm is.
+        (sim.elevation_deg, sim.plane_deg) = (30.0, 45.0);
+        let resumed = tracker.feed(&[TimedFrame {
+            frame: frame(&sim, false),
+            at: steady + Duration::from_millis(400),
+        }]);
+        assert!(resumed, "the game is told the frames resumed after a gap");
+        assert_eq!(
+            tracker.hand,
+            Some(tracker.pose.expect("pose").hand),
+            "no glide across the gap"
+        );
     }
 }
