@@ -2,8 +2,10 @@
 //
 // Buildable port of tests/C3_MS4_Slave__1___1_1.ino. Protocol, pins and timing
 // are unchanged. Changes: the missing BNO080 include, an ESP-NOW receive
-// callback that compiles on Arduino-ESP32 2.x and 3.x, and a length check
-// before copying a received SYNC message.
+// callback that compiles on Arduino-ESP32 2.x and 3.x, a length check
+// before copying a received SYNC message, the rotation-vector report enabled
+// after a second-attempt IMU init, and a 2 s retry of an IMU missing at boot
+// or after a failed watchdog reset.
 #include <Arduino.h>
 #include <WiFi.h>
 #include <esp_now.h>
@@ -98,6 +100,8 @@ const unsigned long SENSOR_INTERVAL = 16;
 unsigned long lastBlinkTime = 0;
 bool currentLedState = HIGH;
 unsigned long lastSlaveBroadcast = 0;
+unsigned long lastSensorRetry = 0;
+const unsigned long SENSOR_RETRY_INTERVAL = 2000;
 
 // ================= BATTERY READING =================
 float readBatteryVoltage() {
@@ -131,7 +135,9 @@ void resetSensor(int id) {
     bno1_ok = true;
     staleCount1 = 0;
   } else {
-    Serial.println(">>> Sensor Recovery Failed.");
+    Serial.println(">>> Sensor Recovery Failed, retrying in 2 s.");
+    bno1_ok = false;
+    lastSensorRetry = millis();
   }
 }
 
@@ -230,6 +236,7 @@ void setup() {
     delay(500);
     if (bno1.begin(BNO_ADDR, Wire)) {
       Serial.println("BNO1: Success on second attempt");
+      bno1.enableGameRotationVector(50);
       bno1_ok = true;
     }
   }
@@ -263,6 +270,20 @@ void loop() {
     esp_deep_sleep_enable_gpio_wakeup((1ULL << SWITCH_PIN), ESP_GPIO_WAKEUP_GPIO_HIGH);
     delay(100);
     esp_deep_sleep_start();
+  }
+
+  // A missing IMU (at boot or after a failed watchdog reset) never streams,
+  // so keep retrying it.
+  if (!bno1_ok && millis() - lastSensorRetry >= SENSOR_RETRY_INTERVAL) {
+    lastSensorRetry = millis();
+    if (bno1.begin(BNO_ADDR, Wire)) {
+      Serial.println("BNO1: Success on retry");
+      bno1.enableGameRotationVector(50);
+      bno1_ok = true;
+      staleCount1 = 0;
+    } else {
+      Serial.println("BNO1: still not found, retrying in 2 s");
+    }
   }
 
   if (!isSynced) {
