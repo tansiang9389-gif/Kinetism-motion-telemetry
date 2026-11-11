@@ -4,8 +4,9 @@
 // are unchanged. Changes: the missing BNO080 include, an ESP-NOW receive
 // callback that compiles on Arduino-ESP32 2.x and 3.x, a length check
 // before copying a received SYNC message, the rotation-vector report enabled
-// after a second-attempt IMU init, and a 2 s retry of an IMU missing at boot
-// or after a failed watchdog reset.
+// after a second-attempt IMU init, a watchdog reset after 1 s without a new
+// IMU reading, and a 2 s retry of an IMU missing at boot or after a failed
+// watchdog reset.
 #include <Arduino.h>
 #include <WiFi.h>
 #include <esp_now.h>
@@ -102,6 +103,8 @@ bool currentLedState = HIGH;
 unsigned long lastSlaveBroadcast = 0;
 unsigned long lastSensorRetry = 0;
 const unsigned long SENSOR_RETRY_INTERVAL = 2000;
+unsigned long lastSensorData = 0;
+const unsigned long SENSOR_SILENCE_TIMEOUT = 1000;
 
 // ================= BATTERY READING =================
 float readBatteryVoltage() {
@@ -134,6 +137,7 @@ void resetSensor(int id) {
     bno1.enableGameRotationVector(50);
     bno1_ok = true;
     staleCount1 = 0;
+    lastSensorData = millis();
   } else {
     Serial.println(">>> Sensor Recovery Failed, retrying in 2 s.");
     bno1_ok = false;
@@ -154,6 +158,7 @@ bool readMySensor(SensorSample &outSample, uint8_t myId) {
       if (isSame(raw, prevQ1)) staleCount1++;
       else { staleCount1 = 0; prevQ1 = raw; }
       if (staleCount1 >= 200) { resetSensor(1); return false; }
+      lastSensorData = millis();
       outSample.id = myId;
       outSample.timestamp = millis() + timeOffset;
       outSample.battery = getBatteryPercentage();
@@ -164,6 +169,8 @@ bool readMySensor(SensorSample &outSample, uint8_t myId) {
       return true;
     }
   }
+  // An IMU that stops answering never trips the stale-value check above.
+  if (millis() - lastSensorData > SENSOR_SILENCE_TIMEOUT) resetSensor(1);
   return false;
 }
 
@@ -231,6 +238,7 @@ void setup() {
     Serial.println("BNO1: SUCCESS (Slave sensor found)");
     bno1.enableGameRotationVector(50);
     bno1_ok = true;
+    lastSensorData = millis();
   } else {
     Serial.println("BNO1: FAILED! Check pins 6(SDA) and 7(SCL) and Power.");
     delay(500);
@@ -238,6 +246,7 @@ void setup() {
       Serial.println("BNO1: Success on second attempt");
       bno1.enableGameRotationVector(50);
       bno1_ok = true;
+      lastSensorData = millis();
     }
   }
 
@@ -281,12 +290,16 @@ void loop() {
       bno1.enableGameRotationVector(50);
       bno1_ok = true;
       staleCount1 = 0;
+      lastSensorData = millis();
     } else {
       Serial.println("BNO1: still not found, retrying in 2 s");
     }
   }
 
   if (!isSynced) {
+    // The IMU is only read once synced, so waiting for the master is not silence.
+    lastSensorData = millis();
+
     // Blink while searching
     if (millis() - lastBlinkTime > 250) {
       lastBlinkTime = millis();

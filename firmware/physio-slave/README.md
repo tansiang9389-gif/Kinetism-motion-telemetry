@@ -15,6 +15,9 @@ unchanged from the sketch. The port adds:
 * a length check before copying a received SYNC message;
 * the rotation-vector report enabled when the IMU only answers on the second
   boot attempt (the sketch marked it ready but it never streamed);
+* a watchdog reset when a working IMU sends no new reading for more than 1 s
+  after pairing (the sketch only caught repeated identical readings, so an IMU
+  that stopped answering on I2C was never reset);
 * a retry every 2 s, logged as `BNO1: still not found`, while the IMU is
   missing after boot or after a failed watchdog reset (the sketch left a
   failed reset silent for good).
