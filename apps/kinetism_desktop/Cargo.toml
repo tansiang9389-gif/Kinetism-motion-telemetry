@@ -1,0 +1,22 @@
+[package]
+name = "kinetism_desktop"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1"
+btleplug = "0.13"
+chrono = { version = "0.4", features = ["serde"] }
+dirs = "6"
+eframe = "0.37"
+env_logger = "0.11"
+fastrand = "2"
+futures = "0.3"
+log = "0.4"
+png = "0.18"
+reqwest = { version = "0.13", default-features = false, features = ["json", "native-tls", "charset", "system-proxy", "query"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "net"] }
+tts = "0.26"
+uuid = "1"
