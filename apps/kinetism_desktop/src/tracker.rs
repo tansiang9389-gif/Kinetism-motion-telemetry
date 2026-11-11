@@ -22,6 +22,8 @@ pub enum CalStep {
 }
 
 pub const HISTORY_SECONDS: f64 = 15.0;
+/// Upper-arm data older than this is stale: recording and the game pause.
+pub const LIVE_DATA_SECONDS: f32 = 1.5;
 
 pub struct ArmTracker {
     pub side: Side,
@@ -39,6 +41,7 @@ pub struct ArmTracker {
     /// (seconds since start, shoulder elevation, elbow flexion)
     pub history: VecDeque<(f64, f64, Option<f64>)>,
     started: Instant,
+    /// Arrival of the latest frame carrying the upper-arm orientation.
     pub last_frame_at: Option<Instant>,
 }
 
@@ -71,12 +74,20 @@ impl ArmTracker {
         self.acc.progress()
     }
 
+    /// True while upper-arm orientation keeps arriving. Frames carrying only the
+    /// forearm sensor cannot move the shoulder angle, so they do not count.
+    pub fn has_live_data(&self) -> bool {
+        self.last_frame_at
+            .is_some_and(|t| t.elapsed().as_secs_f32() <= LIVE_DATA_SECONDS)
+    }
+
     pub fn recalibrate(&mut self) {
         self.step = CalStep::Rest;
         self.calibration = None;
         self.rest = None;
         self.acc.clear();
         self.message = None;
+        self.moving_warning = false;
         self.pose = None;
         self.hand = None;
         self.smoother.reset();
@@ -93,12 +104,14 @@ impl ArmTracker {
     pub fn start_rest_capture(&mut self) {
         self.acc.clear();
         self.message = None;
+        self.moving_warning = false;
         self.step = CalStep::CapturingRest;
     }
 
     pub fn start_forward_capture(&mut self) {
         self.acc.clear();
         self.message = None;
+        self.moving_warning = false;
         self.step = CalStep::CapturingForward;
     }
 
@@ -121,10 +134,10 @@ impl ArmTracker {
 
     pub fn feed(&mut self, frames: &[TimedFrame]) {
         for tf in frames {
-            self.last_frame_at = Some(tf.at);
             let Some(upper) = tf.frame.upper else {
                 continue;
             };
+            self.last_frame_at = Some(tf.at);
             match self.step {
                 CalStep::CapturingRest | CalStep::CapturingForward => {
                     match self.acc.push(upper, tf.frame.forearm) {
@@ -533,5 +546,96 @@ mod tests {
             "a forearm sensor that stops is flagged"
         );
         assert!(both.pose.expect("pose").elbow_flexion_deg.is_none());
+    }
+
+    #[test]
+    fn a_new_capture_clears_a_stale_movement_warning() {
+        let mut sim = SimArm::new(Side::Right);
+        let mut tracker = ArmTracker::new(Side::Right);
+        let mut interrupted_rest = |tracker: &mut ArmTracker| {
+            sim.elevation_deg = 0.0;
+            tracker.start_rest_capture();
+            tracker.feed(&frames(&sim, 3, true));
+            sim.elevation_deg = 30.0;
+            tracker.feed(&frames(&sim, 1, true));
+            assert!(tracker.moving_warning, "moving during capture warns");
+        };
+
+        // Switching the sensor source or arm side mid-capture recalibrates.
+        interrupted_rest(&mut tracker);
+        tracker.recalibrate();
+        assert!(!tracker.moving_warning, "recalibrate clears the warning");
+
+        interrupted_rest(&mut tracker);
+        tracker.start_rest_capture();
+        assert!(!tracker.moving_warning, "a new rest capture starts clean");
+
+        interrupted_rest(&mut tracker);
+        sim.elevation_deg = 0.0;
+        tracker.feed(&frames(&sim, SAMPLES_PER_POSE, true));
+        assert_eq!(tracker.step, CalStep::Forward, "rest pose captured");
+        sim.elevation_deg = 60.0;
+        sim.plane_deg = 90.0;
+        tracker.start_forward_capture();
+        tracker.feed(&frames(&sim, 2, true));
+        sim.elevation_deg = 20.0;
+        tracker.feed(&frames(&sim, 1, true));
+        assert!(
+            tracker.moving_warning,
+            "moving during the forward capture warns"
+        );
+        tracker.start_forward_capture();
+        assert!(
+            !tracker.moving_warning,
+            "a new forward capture starts clean"
+        );
+    }
+
+    #[test]
+    fn forearm_only_frames_do_not_make_a_frozen_angle_look_live() {
+        let mut sim = SimArm::new(Side::Right);
+        let mut tracker = ArmTracker::new(Side::Right);
+        assert!(!tracker.has_live_data(), "no data before the first frame");
+        calibrate(&mut tracker, &mut sim, true);
+        assert!(tracker.has_live_data(), "upper-arm frames are live data");
+
+        // The upper-arm IMU stopped 5 s ago; the forearm sensor keeps streaming.
+        let stopped = Instant::now()
+            .checked_sub(Duration::from_secs(5))
+            .expect("an instant 5 s ago");
+        tracker.feed(&[TimedFrame {
+            frame: frame(&sim, true),
+            at: stopped,
+        }]);
+        assert!(
+            !tracker.has_live_data(),
+            "upper-arm data from 5 s ago is stale"
+        );
+        let frozen = tracker.pose.expect("pose").elevation_deg;
+        sim.elevation_deg = 90.0;
+        let (_, fore) = sim.quats();
+        let forearm_only: Vec<TimedFrame> = (0..10)
+            .map(|_| TimedFrame {
+                frame: SensorFrame {
+                    upper: None,
+                    forearm: Some(fore),
+                },
+                at: Instant::now(),
+            })
+            .collect();
+        tracker.feed(&forearm_only);
+        assert!(
+            !tracker.has_live_data(),
+            "forearm-only frames keep the data stale, so Record and the game pause"
+        );
+        assert_eq!(tracker.last_frame_at, Some(stopped));
+        assert_eq!(
+            tracker.pose.expect("pose").elevation_deg,
+            frozen,
+            "the shoulder angle cannot change without the upper arm"
+        );
+
+        tracker.feed(&frames(&sim, 1, true));
+        assert!(tracker.has_live_data(), "upper-arm data resumes");
     }
 }

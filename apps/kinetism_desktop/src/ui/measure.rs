@@ -273,10 +273,7 @@ impl KinetismApp {
                 }
             });
         });
-        let stale = self
-            .tracker
-            .last_frame_at
-            .is_none_or(|t| t.elapsed().as_secs_f32() > 1.5);
+        let stale = !self.tracker.has_live_data();
         if stale {
             ui::tinted_card(ui, theme::WARN, |ui| {
                 ui.label(

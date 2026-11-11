@@ -284,12 +284,12 @@ impl Anthropometrics {
             if v.is_finite() && v >= lo && v <= hi {
                 Ok(())
             } else {
-                Err(format!("Enter a {name} between {lo:.0} and {hi:.0} cm."))
+                Err(format!("Enter {name} between {lo:.0} and {hi:.0} cm."))
             }
         };
-        check(self.bicep_cm, 10.0, 65.0, "bicep circumference")?;
-        check(self.forearm_cm, 10.0, 55.0, "forearm circumference")?;
-        check(self.arm_length_cm, 15.0, 95.0, "arm length")
+        check(self.bicep_cm, 10.0, 65.0, "a bicep circumference")?;
+        check(self.forearm_cm, 10.0, 55.0, "a forearm circumference")?;
+        check(self.arm_length_cm, 15.0, 95.0, "an arm length")
     }
 
     fn bicep_area_cm2(&self) -> f64 {
@@ -701,9 +701,9 @@ mod tests {
             check(29.0, 60.0, 55.0),
             Err("Enter a forearm circumference between 10 and 55 cm.".to_string())
         );
-        assert!(
-            check(29.0, 24.5, f64::NAN)
-                .is_err_and(|e| e.contains("arm length between 15 and 95 cm")),
+        assert_eq!(
+            check(29.0, 24.5, f64::NAN),
+            Err("Enter an arm length between 15 and 95 cm.".to_string()),
             "NaN arm length is rejected"
         );
 

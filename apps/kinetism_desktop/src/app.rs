@@ -650,7 +650,9 @@ impl KinetismApp {
         ctx.request_repaint();
     }
 
-    /// Advance the running game from the latest hand position.
+    /// Advance the running game from the latest hand position. Without live
+    /// upper-arm data the game holds still, so a sensor dropout cannot time out
+    /// reps and save a low score.
     fn update_game(&mut self, dt: f64) {
         self.play.fx.update(dt);
         let Some(hand) = self.tracker.hand else {
@@ -660,7 +662,7 @@ impl KinetismApp {
         let Some(game) = self.play.game.as_mut() else {
             return;
         };
-        if self.play.paused || game.stage == Stage::Finished {
+        if self.play.paused || !self.tracker.has_live_data() || game.stage == Stage::Finished {
             return;
         }
         if game.stage == Stage::Playing {

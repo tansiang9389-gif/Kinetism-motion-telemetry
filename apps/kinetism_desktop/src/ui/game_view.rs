@@ -898,13 +898,9 @@ impl KinetismApp {
                 Color32::WHITE,
             );
         }
-        if self
-            .tracker
-            .last_frame_at
-            .is_none_or(|t| t.elapsed().as_secs_f32() > 1.5)
-        {
+        if !self.tracker.has_live_data() {
             hud(
-                "Waiting for sensor data…".into(),
+                "Waiting for sensor data… (game paused)".into(),
                 rect.center() - Vec2::new(0.0, 120.0),
                 Align2::CENTER_CENTER,
                 22.0,

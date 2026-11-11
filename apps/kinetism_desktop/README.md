@@ -191,7 +191,10 @@ app's record log. Phone records without `movement` are read as elbow flexion
 Every change is saved locally first
 (`%APPDATA%\Kinetism\desktop-cache.json`) and queued for Firestore. Pending
 writes survive restarts and are retried. Firestore is re-read every 30 s so
-phone records appear here. The top-right chip shows the sync state.
+phone records appear here. The top-right chip shows the sync state. If the
+cache file cannot be read at start-up, it is never overwritten: the app moves
+it aside to `desktop-cache.unreadable-<date-time>.json` (records that never
+reached Firestore can be recovered from it) and warns in the status bar.
 
 > Security: the project currently accepts unauthenticated reads and writes
 > (the phone app has no sign-in). Add Firebase Authentication and restrictive
@@ -236,4 +239,7 @@ tracing, PNF slicing/bombs/combos, unlocks and streaks.
 | *Wi-Fi: waiting for packets* | Sensor off or on another network, `UDP_HOST` is not this PC's IP, or Windows Firewall blocks the app (see [Wi-Fi sensor](#wi-fi-sensor-kin1-over-udp)). |
 | *Sensor error: Cannot listen on UDP port 4210* | Another program uses the port; close the Python PC dashboard. |
 | Angle drifts after several minutes | Game-rotation-vector heading drift: press **Recalibrate**. |
+| *No live sensor data* on Measure, or *Waiting for sensor data… (game paused)* | No upper-arm orientation for 1.5 s (the forearm sensor alone cannot move the shoulder angle). Recording and the game pause until it returns; check the upper-arm sensor. |
+| Status bar: *Local cache unreadable … moved to …* | The cache could not be read (for example it was re-saved in another encoding). It was kept as `desktop-cache.unreadable-<date-time>.json`; the app continues from Firestore data. |
+| Status bar: *… Local saving is paused …* | Another program (backup or antivirus) holds the cache open. Close it and restart the app; new records still sync to Firestore. |
 | Sync chip shows an error | Check the internet connection and Firestore rules. Records stay queued locally. |

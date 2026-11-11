@@ -12,7 +12,8 @@ use crate::model::{GameSession, MeasurementRecord, Patient};
 use chrono::{DateTime, Utc};
 use firestore::{Fields, FirestoreClient};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::io::ErrorKind;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
@@ -102,6 +103,10 @@ pub struct DataStore {
     ctx: eframe::egui::Context,
     last_refresh: Instant,
     cache_error: Option<String>,
+    /// Problem found while loading the cache; shown for the whole session.
+    cache_warning: Option<String>,
+    /// The existing cache could not be read or moved aside: never overwrite it.
+    save_blocked: bool,
 }
 
 pub fn data_dir() -> PathBuf {
@@ -109,6 +114,45 @@ pub fn data_dir() -> PathBuf {
         .map(PathBuf::from)
         .or_else(|| dirs::data_dir().map(|d| d.join("Kinetism")))
         .unwrap_or_else(|| PathBuf::from("."))
+}
+
+/// Loaded cache, a warning for the status bar, and whether saving must stay off.
+type LoadedCache = (CacheFile, Option<String>, bool);
+
+/// Reads the offline cache. A cache that exists but cannot be read or parsed is
+/// moved aside first, so the next save cannot overwrite unsynced records.
+fn load_cache(path: &Path) -> LoadedCache {
+    let problem = match std::fs::read_to_string(path) {
+        Ok(text) => match serde_json::from_str::<CacheFile>(&text) {
+            Ok(cache) => return (cache, None, false),
+            Err(e) => e.to_string(),
+        },
+        Err(e) if matches!(e.kind(), ErrorKind::NotFound | ErrorKind::NotADirectory) => {
+            return (CacheFile::default(), None, false);
+        }
+        Err(e) => e.to_string(),
+    };
+    let backup = path.with_extension(format!(
+        "unreadable-{}.json",
+        Utc::now().format("%Y%m%d-%H%M%S")
+    ));
+    match std::fs::rename(path, &backup) {
+        Ok(()) => (
+            CacheFile::default(),
+            Some(format!(
+                "Local cache unreadable ({problem}); it was moved to {} and the app started from Firestore data.",
+                backup.display()
+            )),
+            false,
+        ),
+        Err(e) => (
+            CacheFile::default(),
+            Some(format!(
+                "Local cache unreadable ({problem}) and could not be moved aside ({e}). Local saving is paused so it is not overwritten; close other programs using it and restart."
+            )),
+            true,
+        ),
+    }
 }
 
 impl DataStore {
@@ -120,18 +164,7 @@ impl DataStore {
         dir: PathBuf,
     ) -> Self {
         let cache_path = dir.join("desktop-cache.json");
-        let (cache, cache_error) = match std::fs::read_to_string(&cache_path) {
-            Ok(text) => match serde_json::from_str::<CacheFile>(&text) {
-                Ok(c) => (c, None),
-                Err(e) => (
-                    CacheFile::default(),
-                    Some(format!(
-                        "Local cache unreadable ({e}); starting from Firestore data."
-                    )),
-                ),
-            },
-            Err(_) => (CacheFile::default(), None),
-        };
+        let (cache, cache_warning, save_blocked) = load_cache(&cache_path);
         let mut store = Self {
             patients: cache.patients,
             records: cache.records,
@@ -147,7 +180,9 @@ impl DataStore {
             events: None,
             ctx,
             last_refresh: Instant::now(),
-            cache_error,
+            cache_error: None,
+            cache_warning,
+            save_blocked,
         };
         if let Some(project) = project_id {
             let (req_tx, req_rx) = unbounded_channel();
@@ -176,7 +211,9 @@ impl DataStore {
     }
 
     pub fn cache_error(&self) -> Option<&str> {
-        self.cache_error.as_deref()
+        self.cache_error
+            .as_deref()
+            .or(self.cache_warning.as_deref())
     }
 
     pub fn refresh(&mut self) {
@@ -344,6 +381,9 @@ impl DataStore {
     }
 
     pub fn save_cache(&mut self) {
+        if self.save_blocked {
+            return;
+        }
         let cache = CacheFile {
             patients: self.patients.clone(),
             records: self.records.clone(),
@@ -827,7 +867,7 @@ mod tests {
         let dir = test_dir("corrupt");
         std::fs::create_dir_all(&dir).expect("scratch folder");
         std::fs::write(dir.join("desktop-cache.json"), "{ not json").expect("cache file");
-        let store = open(&dir, &runtime);
+        let mut store = open(&dir, &runtime);
         assert!(
             store
                 .cache_error()
@@ -836,6 +876,36 @@ mod tests {
             store.cache_error()
         );
         assert!(store.patients.is_empty() && store.pending_count() == 0);
+        let kept = backups(&dir);
+        assert_eq!(kept.len(), 1, "the corrupt cache is moved aside: {kept:?}");
+        assert_eq!(
+            std::fs::read_to_string(&kept[0]).expect("backup"),
+            "{ not json"
+        );
+        store.add_record(record("r0", 3, None));
+        assert!(
+            store
+                .cache_error()
+                .is_some_and(|e| e.starts_with("Local cache unreadable")),
+            "the warning stays after a successful save: {:?}",
+            store.cache_error()
+        );
+        assert_eq!(
+            std::fs::read_to_string(&kept[0]).expect("backup"),
+            "{ not json",
+            "saving never touches the backup"
+        );
+        let reopened = open(&dir, &runtime);
+        assert!(
+            reopened.cache_error().is_none(),
+            "{:?}",
+            reopened.cache_error()
+        );
+        assert_eq!(
+            reopened.pending_count(),
+            1,
+            "the new cache holds the queued record"
+        );
 
         let blocker = dir.join("not-a-folder");
         std::fs::write(&blocker, "x").expect("blocking file");
@@ -850,6 +920,97 @@ mod tests {
             store.cache_error()
         );
         assert_eq!(store.pending_count(), 1, "the write stays queued in memory");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Files the store moved aside because they could not be read.
+    fn backups(dir: &Path) -> Vec<PathBuf> {
+        std::fs::read_dir(dir)
+            .map(|entries| {
+                entries
+                    .filter_map(|e| e.ok().map(|e| e.path()))
+                    .filter(|p| {
+                        p.file_name()
+                            .and_then(|n| n.to_str())
+                            .is_some_and(|n| n.starts_with("desktop-cache.unreadable-"))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn a_cache_that_is_not_utf8_is_kept_not_overwritten() {
+        let runtime = runtime();
+        let dir = test_dir("utf16");
+        std::fs::create_dir_all(&dir).expect("scratch folder");
+        // Notepad's "Unicode" encoding: UTF-16 LE with a byte-order mark.
+        let utf16: Vec<u8> = [0xFF, 0xFE]
+            .into_iter()
+            .chain(
+                "{\"patients\":[]}"
+                    .encode_utf16()
+                    .flat_map(u16::to_le_bytes),
+            )
+            .collect();
+        std::fs::write(dir.join("desktop-cache.json"), &utf16).expect("cache file");
+        let mut store = open(&dir, &runtime);
+        assert!(
+            store
+                .cache_error()
+                .is_some_and(|e| e.starts_with("Local cache unreadable")),
+            "an unreadable cache is reported, not silently dropped: {:?}",
+            store.cache_error()
+        );
+        store.add_record(record("r1", 2, None));
+        let kept = backups(&dir);
+        assert_eq!(kept.len(), 1, "{kept:?}");
+        assert_eq!(
+            std::fs::read(&kept[0]).expect("backup"),
+            utf16,
+            "the original bytes survive the next save"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_locked_cache_is_never_overwritten() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let runtime = runtime();
+        let dir = test_dir("locked");
+        std::fs::create_dir_all(&dir).expect("scratch folder");
+        let path = dir.join("desktop-cache.json");
+        let original = "{\"records\":[]}";
+        std::fs::write(&path, original).expect("cache file");
+        // Another program holds the file without sharing: reading and moving it fail.
+        let lock = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(&path)
+            .expect("exclusive handle");
+        let mut store = open(&dir, &runtime);
+        assert!(
+            store
+                .cache_error()
+                .is_some_and(|e| e.contains("Local saving is paused")),
+            "{:?}",
+            store.cache_error()
+        );
+        store.add_record(record("r1", 2, None));
+        drop(lock);
+        store.add_record(record("r2", 3, None));
+        assert_eq!(
+            store.pending_count(),
+            2,
+            "records stay queued for Firestore"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("cache"),
+            original,
+            "the cache is not overwritten even after the lock is released"
+        );
+        assert!(backups(&dir).is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
