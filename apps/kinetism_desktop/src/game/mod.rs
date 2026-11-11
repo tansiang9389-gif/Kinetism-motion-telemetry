@@ -198,14 +198,20 @@ impl Game {
         (fraction * 100.0).clamp(0.0, 100.0)
     }
 
+    /// Score rounded to 0.1 %: the value that is saved and shown, and the one
+    /// stars and unlocking use, so every screen agrees at the 60/80/90 % lines.
+    pub fn final_score(&self) -> f64 {
+        (self.score_percent() * 10.0).round() / 10.0
+    }
+
     pub fn stars(&self) -> u8 {
-        stars_for(self.score_percent())
+        stars_for(self.final_score())
     }
 
     fn finish(&mut self, events: &mut Vec<GameEvent>) {
         self.stage = Stage::Finished;
         events.push(GameEvent::Finished {
-            score: self.score_percent(),
+            score: self.final_score(),
             stars: self.stars(),
         });
     }
@@ -338,7 +344,7 @@ impl Game {
             patient_name: patient.name.clone(),
             side: self.side,
             level: self.level,
-            score_percent: (self.score_percent() * 10.0).round() / 10.0,
+            score_percent: self.final_score(),
             points: self.points(),
             stars: self.stars(),
             reps,
@@ -545,6 +551,32 @@ mod tests {
         assert_eq!(
             UNLOCK_SCORE_PERCENT, 80.0,
             "two stars is exactly the score that unlocks the next level"
+        );
+    }
+
+    #[test]
+    fn saved_score_stars_and_unlock_agree_at_the_rounding_boundary() {
+        let mut game = Game::new(GameLevel::AppleTrace, Side::Right, None, 8, true, 1);
+        if let Mode::Apple(round) = &mut game.mode {
+            round.scores = vec![0.7996; APPLES_PER_ROUND as usize];
+            round.done = APPLES_PER_ROUND;
+        }
+        assert!(
+            game.score_percent() < UNLOCK_SCORE_PERCENT,
+            "raw score {}",
+            game.score_percent()
+        );
+        let s = game.to_session(&patient(), Utc::now());
+        assert_eq!(s.score_percent, 80.0, "saved rounded to 0.1 %");
+        assert_eq!(
+            s.stars,
+            stars_for(s.score_percent),
+            "the saved stars match the saved score"
+        );
+        assert_eq!(game.stars(), 2, "the result screen and level menu agree");
+        assert!(
+            is_unlocked(&[&s], GameLevel::PnfD1, false),
+            "a saved 80 % unlocks level 1"
         );
     }
 
