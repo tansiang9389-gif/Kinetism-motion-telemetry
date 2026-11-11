@@ -78,6 +78,7 @@ pub struct LinkStats {
     pub packets: u64,
     pub invalid_packets: u64,
     pub rate_hz: f32,
+    pub upper_present: bool,
     pub forearm_present: bool,
     pub last_invalid: Option<String>,
     /// Reported by the Wi-Fi sensor.
@@ -137,6 +138,7 @@ impl Shared {
         }
         let now = Instant::now();
         self.stats.packets += 1;
+        self.stats.upper_present = frame.upper.is_some();
         self.stats.forearm_present = frame.forearm.is_some();
         self.arrivals.push_back(now);
         while self
@@ -308,5 +310,24 @@ mod tests {
         assert_eq!(Source::from_key("ble"), Some(Source::Bluetooth));
         assert_eq!(Source::from_key("sim"), Some(Source::Simulator));
         assert_eq!(Source::from_key("usb"), None);
+    }
+
+    #[test]
+    fn reports_which_segments_are_streaming() {
+        let mut s = Shared::new();
+        s.reset(Source::Bluetooth, LinkState::Streaming("Physio_A".into()));
+        // Master without a working IMU relaying a working slave.
+        s.push(
+            Source::Bluetooth,
+            SensorFrame {
+                upper: None,
+                forearm: Some(Quat::IDENTITY),
+            },
+        );
+        assert!(!s.stats.upper_present);
+        assert!(s.stats.forearm_present);
+        s.push(Source::Bluetooth, frame());
+        assert!(s.stats.upper_present);
+        assert!(!s.stats.forearm_present);
     }
 }

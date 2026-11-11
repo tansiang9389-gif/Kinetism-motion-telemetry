@@ -105,6 +105,7 @@ Select any screenshot to view it at full size:
 | [tests](tests) | PC protocol regressions and saved paired-sensor Arduino reference sketches |
 | [apps/medical_device_app](apps/medical_device_app) | Refined Flutter source, native projects, tests and editable branding |
 | [apps/kinetism_desktop](apps/kinetism_desktop) | Rust desktop app: BLE sensor link, shoulder abduction, Fruit PNF game, muscle progress |
+| [firmware/physio-slave](firmware/physio-slave) | Buildable PlatformIO port of the ESP-NOW forearm slave sketch |
 | [docs/refinement](docs/refinement/design-audit-kinetism.md) | Refinement review, synthetic browser evidence and screenshots |
 
 The original upload ZIP is retained as a sanitised **source-only** archive.
@@ -121,6 +122,8 @@ The [saved ESP-NOW slave sketch](tests/C3_MS4_Slave__1___1_1.ino) is its referen
 companion. These sketches were retained as supplied, not built or flashed during
 this refinement; the slave reference lacks its BNO080 library header and needs
 Arduino/library setup before it can be treated as a buildable firmware project.
+[firmware/physio-slave](firmware/physio-slave/README.md) is a buildable
+PlatformIO port of that slave, with the same protocol.
 
 The root PlatformIO project instead builds the **Wi-Fi/UDP** firmware used by
 the PC dashboard. Its binary UDP packets are not the Flutter BLE payload.

@@ -56,11 +56,14 @@ data. In the game, the mouse pointer drives the virtual hand.
 | Slave (ESP-NOW to master) | Back of the forearm, near the wrist | Values 5-8 (`x,y,z,w`) |
 
 The firmware is [tests/master_1_1_1_1.ino](../../tests/master_1_1_1_1.ino)
-plus [tests/C3_MS4_Slave__1___1_1.ino](../../tests/C3_MS4_Slave__1___1_1.ino).
-No firmware change is needed. If the slave has not synced, the master sends
-zeros for the forearm. Shoulder abduction still works with the upper-arm sensor
-alone; the elbow check and the hand position then fall back to a straight-arm
-estimate.
+plus [tests/C3_MS4_Slave__1___1_1.ino](../../tests/C3_MS4_Slave__1___1_1.ino);
+[firmware/physio-slave](../../firmware/physio-slave/README.md) is a buildable
+port of the slave. No firmware change is needed. If the slave has not synced,
+the master sends zeros for the forearm. Shoulder abduction still works with the
+upper-arm sensor alone; the elbow check and the hand position then fall back to
+a straight-arm estimate. If the master's own IMU is missing, the status bar
+says so and calibration cannot start: everything is measured relative to the
+upper arm.
 
 If the chip shows **"Physio_A connected · no readings"**, the master accepted
 the connection but has nothing to send. Its serial log (USB, 115200 baud)

@@ -511,6 +511,9 @@ impl KinetismApp {
                         .accuracy
                         .map_or(String::new(), |a| format!(" · accuracy {a}/3"))
                 )
+            } else if !stats.upper_present {
+                "Upper-arm IMU (master) not reporting · Forearm ✓ · calibration needs the upper-arm sensor"
+                    .to_string()
             } else if stats.forearm_present {
                 "Upper arm ✓  Forearm ✓".to_string()
             } else {

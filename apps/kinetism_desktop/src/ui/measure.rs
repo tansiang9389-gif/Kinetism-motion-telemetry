@@ -141,12 +141,22 @@ impl KinetismApp {
         if self.tracker.is_calibrated() {
             return true;
         }
-        let live = self.sensor.state().is_live();
+        let stats = self.sensor.stats();
+        let live = self.sensor.state().is_live() && (stats.packets == 0 || stats.upper_present);
         ui.label(ui::muted(format!(
             "{} arm. Seat the patient upright. Each step needs about one second of holding still.",
             self.side().label()
         )));
-        if !live {
+        if stats.packets > 0 && !stats.upper_present {
+            ui::tinted_card(ui, theme::WARN, |ui| {
+                ui.label(
+                    RichText::new(
+                        "The upper-arm (master) sensor sends no orientation, so calibration cannot start. Its IMU is not reporting.",
+                    )
+                    .color(theme::WARN),
+                );
+            });
+        } else if !live {
             ui::tinted_card(ui, theme::WARN, |ui| {
                 ui.label(
                     RichText::new(
