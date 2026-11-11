@@ -250,6 +250,15 @@ impl Game {
         events
     }
 
+    /// The hand was not followed for a while (pause or sensor dropout): the
+    /// next sample starts a new stroke rather than a slice across the gap.
+    pub fn interrupt(&mut self) {
+        // The apple tracer only tests single hand positions, never segments.
+        if let Mode::Pnf(round) = &mut self.mode {
+            round.interrupt();
+        }
+    }
+
     pub fn update(&mut self, hand: Pt, elevation_deg: f64, dt: f64) -> Vec<GameEvent> {
         let mut events = Vec::new();
         match self.stage {
@@ -635,6 +644,46 @@ mod tests {
             affected_side: None,
             updated_at: None,
         }
+    }
+
+    #[test]
+    fn a_pause_or_sensor_dropout_never_becomes_one_long_slice() {
+        let mut game = Game::new(GameLevel::PnfD2, Side::Right, Some(150.0), 2, false, 11);
+        assert!(game.update([0.0, 0.0], 40.0, 3.1).contains(&GameEvent::Go));
+        let path = match &game.mode {
+            Mode::Pnf(round) => round.path,
+            Mode::Apple(_) => unreachable!("level 2 is a PNF round"),
+        };
+        assert!(
+            game.update(path.start, 40.0, 0.05)
+                .contains(&GameEvent::RepStarted(1))
+        );
+        let clean_slices = |events: &[GameEvent]| {
+            events
+                .iter()
+                .filter(|e| matches!(e, GameEvent::FruitSliced { clean: true, .. }))
+                .count()
+        };
+        let mut joined = game.clone();
+        assert_eq!(
+            clean_slices(&joined.update(path.end, 120.0, 0.05)),
+            3,
+            "joined across the gap, one jump to the top cuts every fruit cleanly"
+        );
+
+        // Paused (or no sensor data) at the basket while the hand moves to the top.
+        game.interrupt();
+        let events = game.update(path.end, 120.0, 0.05);
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, GameEvent::FruitSliced { .. })),
+            "nothing is sliced across the gap: {events:?}"
+        );
+        assert!(
+            events.contains(&GameEvent::ReachedTop),
+            "the hand did reach the top"
+        );
     }
 
     #[test]

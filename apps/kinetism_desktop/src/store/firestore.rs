@@ -10,6 +10,7 @@ use crate::clinical::{
 };
 use crate::model::{GameLevel, GameSession, MeasurementRecord, MmtSource, Patient};
 use chrono::{DateTime, SecondsFormat, Utc};
+use reqwest::StatusCode;
 use serde_json::{Map, Value, json};
 use std::time::Duration;
 
@@ -52,6 +53,7 @@ pub fn get_str(fields: &Fields, key: &str) -> Option<String> {
         .map(str::to_string)
 }
 
+/// A number field; `None` when missing, unparseable or not finite (`"1e400"`, `"NaN"`).
 pub fn get_f64(fields: &Fields, key: &str) -> Option<f64> {
     let v = fields.get(key)?;
     let n = if let Some(d) = v.get("doubleValue") {
@@ -101,18 +103,20 @@ pub fn patient_to_fields(p: &Patient) -> Fields {
 }
 
 pub fn patient_from_fields(id: &str, f: &Fields) -> Patient {
+    // Dimensions the forms would reject (e.g. 1e155 cm) are dropped, not used.
     let arm = match (
         get_f64(f, "bicepCircumferenceCm"),
         get_f64(f, "forearmCircumferenceCm"),
         get_f64(f, "armLengthCm"),
     ) {
-        (Some(b), Some(fa), Some(l)) if b > 0.0 && fa > 0.0 && l > 0.0 => Some(Anthropometrics {
+        (Some(b), Some(fa), Some(l)) => Some(Anthropometrics {
             bicep_cm: b,
             forearm_cm: fa,
             arm_length_cm: l,
         }),
         _ => None,
-    };
+    }
+    .filter(|arm| arm.validate().is_ok());
     Patient {
         id: id.to_string(),
         name: get_str(f, "name").unwrap_or_else(|| "Unnamed patient".into()),
@@ -171,21 +175,36 @@ pub fn record_to_fields(r: &MeasurementRecord) -> Fields {
     f
 }
 
+/// Arm the phone app assumes when a record carries no dimensions.
+const PHONE_DEFAULT_ARM: Anthropometrics = Anthropometrics {
+    bicep_cm: 28.0,
+    forearm_cm: 24.0,
+    arm_length_cm: 54.0,
+};
+
 /// Mirrors the phone app's defensive `MeasurementRecord.fromMap` defaults.
+/// Every number stays finite: the local cache (JSON) cannot store infinities.
 pub fn record_from_fields(id: &str, f: &Fields) -> MeasurementRecord {
     let patient_id = get_str(f, "patientId").unwrap_or_else(|| "unknown-patient".into());
     let body_part = get_str(f, "bodyPart").unwrap_or_else(|| "Arm".into());
     let movement = Movement::infer(get_str(f, "movement").as_deref(), &body_part);
     let arm = Anthropometrics {
-        bicep_cm: get_f64(f, "bicepCircumferenceCm").unwrap_or(28.0),
-        forearm_cm: get_f64(f, "forearmCircumferenceCm").unwrap_or(24.0),
-        arm_length_cm: get_f64(f, "armLengthCm").unwrap_or(54.0),
+        bicep_cm: get_f64(f, "bicepCircumferenceCm").unwrap_or(PHONE_DEFAULT_ARM.bicep_cm),
+        forearm_cm: get_f64(f, "forearmCircumferenceCm").unwrap_or(PHONE_DEFAULT_ARM.forearm_cm),
+        arm_length_cm: get_f64(f, "armLengthCm").unwrap_or(PHONE_DEFAULT_ARM.arm_length_cm),
+    };
+    // Dimensions the forms would reject (e.g. 1e155 cm) overflow the load models.
+    let arm = if arm.validate().is_ok() {
+        arm
+    } else {
+        PHONE_DEFAULT_ARM
     };
     let angle = get_f64(f, "angleDegrees").unwrap_or(90.0);
     let force = get_f64(f, "forceNewtons").unwrap_or_else(|| match movement {
         Movement::ElbowFlexion => arm.elbow_force_newtons(angle, PHONE_APP_DEFAULT_ACCEL_G),
         Movement::ShoulderAbduction => arm.shoulder_load_newtons(angle),
     });
+    let force = if force.is_finite() { force } else { 0.0 };
     let fallback = match movement {
         Movement::ElbowFlexion => grade_elbow_flexion(angle, force, &arm),
         Movement::ShoulderAbduction => grade_shoulder_abduction(angle, None, None),
@@ -306,6 +325,39 @@ impl std::fmt::Display for FsError {
     }
 }
 
+/// Firestore's reply to a request. A success status only counts with a JSON
+/// object body: a proxy or Wi-Fi sign-in page answering `200` with HTML must
+/// not look like an acknowledged write or an empty collection.
+fn read_reply(status: StatusCode, body: &[u8]) -> Result<Value, FsError> {
+    let json = serde_json::from_slice::<Value>(body).ok();
+    if status.is_success() {
+        return match json {
+            Some(body) if body.is_object() => Ok(body),
+            _ => Err(FsError {
+                message: format!(
+                    "Firestore reply was not JSON (HTTP {}): a proxy or Wi-Fi sign-in page may be in the way",
+                    status.as_u16()
+                ),
+                offline: true,
+            }),
+        };
+    }
+    let body = json.unwrap_or(Value::Null);
+    let detail = body
+        .pointer("/error/status")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let message = body
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .unwrap_or("request rejected");
+    Err(FsError {
+        message: format!("Firestore {} {detail}: {message}", status.as_u16()),
+        offline: status.is_server_error() || status == StatusCode::TOO_MANY_REQUESTS,
+    })
+}
+
 impl FirestoreClient {
     pub fn new(project_id: &str) -> Self {
         let http = reqwest::Client::builder()
@@ -322,23 +374,8 @@ impl FirestoreClient {
 
     async fn check(response: reqwest::Response) -> Result<Value, FsError> {
         let status = response.status();
-        let body: Value = response.json().await.unwrap_or(Value::Null);
-        if status.is_success() {
-            return Ok(body);
-        }
-        let detail = body
-            .pointer("/error/status")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string();
-        let message = body
-            .pointer("/error/message")
-            .and_then(Value::as_str)
-            .unwrap_or("request rejected");
-        Err(FsError {
-            message: format!("Firestore {} {detail}: {message}", status.as_u16()),
-            offline: status.is_server_error() || status.as_u16() == 429,
-        })
+        let body = response.bytes().await.map_err(Self::network)?;
+        read_reply(status, &body)
     }
 
     fn network(e: reqwest::Error) -> FsError {
@@ -697,5 +734,70 @@ mod tests {
         }))
         .expect("valid game");
         assert_eq!(low.score_percent, 0.0, "scores clamp to 0%");
+    }
+
+    #[test]
+    fn a_success_status_without_a_json_body_is_a_retryable_failure() {
+        let portal = b"<html><body>Sign in to Clinic-WiFi</body></html>";
+        for (status, body) in [
+            (StatusCode::OK, &portal[..]),
+            (StatusCode::OK, &b""[..]),
+            (StatusCode::OK, &b"null"[..]),
+            (StatusCode::NO_CONTENT, &b""[..]),
+        ] {
+            let e = read_reply(status, body).expect_err("not a Firestore reply");
+            assert!(e.offline, "{status}: retried later, never acknowledged");
+            assert!(
+                e.message.starts_with("Firestore reply was not JSON"),
+                "{status}: {}",
+                e.message
+            );
+        }
+        assert_eq!(
+            read_reply(StatusCode::OK, b"{}").expect("an empty collection"),
+            json!({})
+        );
+        let written = br#"{"name": "projects/p/databases/(default)/documents/Patients/p1"}"#;
+        assert!(read_reply(StatusCode::OK, written).is_ok());
+
+        let denied = br#"{"error": {"code": 403, "status": "PERMISSION_DENIED", "message": "Missing or insufficient permissions."}}"#;
+        let e = read_reply(StatusCode::FORBIDDEN, denied).expect_err("rejected");
+        assert_eq!(
+            e.message,
+            "Firestore 403 PERMISSION_DENIED: Missing or insufficient permissions."
+        );
+        assert!(!e.offline, "rules errors are not retried as offline");
+        for status in [
+            StatusCode::SERVICE_UNAVAILABLE,
+            StatusCode::TOO_MANY_REQUESTS,
+        ] {
+            let e = read_reply(status, &portal[..]).expect_err("failed");
+            assert!(e.offline, "{status} is retried");
+            assert!(e.message.ends_with(": request rejected"), "{}", e.message);
+        }
+    }
+
+    #[test]
+    fn patient_arm_dimensions_outside_the_form_ranges_are_dropped() {
+        let arm = |b: f64, fa: f64, l: f64| {
+            patient_from_fields(
+                "p",
+                &doc(json!({
+                    "bicepCircumferenceCm": {"doubleValue": b},
+                    "forearmCircumferenceCm": {"doubleValue": fa},
+                    "armLengthCm": {"doubleValue": l}
+                })),
+            )
+            .arm
+        };
+        assert_eq!(
+            arm(30.5, 25.0, 56.0).map(|a| a.bicep_cm),
+            Some(30.5),
+            "phone-app values are kept"
+        );
+        assert_eq!(arm(10.0, 10.0, 15.0).map(|a| a.arm_length_cm), Some(15.0));
+        for (b, fa, l) in [(1e155, 25.0, 56.0), (30.0, 0.0, 56.0), (30.0, 25.0, 500.0)] {
+            assert_eq!(arm(b, fa, l), None, "{b} / {fa} / {l} cm");
+        }
     }
 }

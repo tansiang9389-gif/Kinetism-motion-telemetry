@@ -7,6 +7,7 @@ pub mod udp;
 
 use frame::SensorFrame;
 use std::collections::VecDeque;
+use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc::UnboundedSender;
@@ -85,6 +86,8 @@ pub struct LinkStats {
     pub battery_percent: Option<u8>,
     pub accuracy: Option<u8>,
     pub device_rate_hz: Option<f32>,
+    /// Wi-Fi board followed most recently; kept while waiting for it to return.
+    pub wifi_sender: Option<IpAddr>,
 }
 
 pub(crate) struct Shared {
@@ -173,6 +176,13 @@ impl Shared {
         self.stats.battery_percent = Some(packet.battery_percent);
         self.stats.accuracy = Some(packet.accuracy);
         self.stats.device_rate_hz = Some(packet.sample_rate_hz);
+    }
+
+    /// The Wi-Fi board whose packets are being used.
+    pub(crate) fn follow_wifi(&mut self, sender: IpAddr) {
+        if self.source == Source::Wifi {
+            self.stats.wifi_sender = Some(sender);
+        }
     }
 }
 
@@ -383,6 +393,25 @@ mod tests {
                 "{state:?}"
             );
         }
+    }
+
+    #[test]
+    fn the_followed_wifi_board_is_reported_until_the_source_changes() {
+        let board: IpAddr = "192.168.1.20".parse().expect("address");
+        let mut s = Shared::new();
+        s.reset(Source::Bluetooth, LinkState::Scanning);
+        s.follow_wifi(board);
+        assert_eq!(s.stats.wifi_sender, None, "only while Wi-Fi is the source");
+        s.reset(Source::Wifi, LinkState::Listening("UDP 4210".into()));
+        s.follow_wifi(board);
+        s.set_state(Source::Wifi, LinkState::Listening("UDP 4210".into()));
+        assert_eq!(
+            s.stats.wifi_sender,
+            Some(board),
+            "kept while waiting for the board to return"
+        );
+        s.reset(Source::Wifi, LinkState::Listening("UDP 4210".into()));
+        assert_eq!(s.stats.wifi_sender, None, "cleared on reconnect");
     }
 
     #[test]

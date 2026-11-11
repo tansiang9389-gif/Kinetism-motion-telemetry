@@ -53,7 +53,10 @@ Then:
 
 No sensor at hand? Choose **Simulator**. A virtual arm generates real
 quaternion packets that go through the same parser and calibration as sensor
-data. In the game, the mouse pointer drives the virtual hand.
+data. In the game, the mouse pointer drives the virtual hand. Simulator
+attempts and game rounds are practice only: they are shown but never saved,
+synced or used to unlock levels (except in `KINETISM_DEMO` mode, which uses a
+throwaway store).
 
 ## Sensors
 
@@ -90,7 +93,10 @@ tooltip while it waits for packets.
 * One IMU only: strap it on the **lateral upper arm**. Shoulder abduction and
   the game work. Elbow flexion needs the Bluetooth pair.
 * The app follows the first board that sends, and forwards about 25 frames/s
-  so calibration and smoothing behave like the 20 Hz Bluetooth stream.
+  so calibration and smoothing behave like the 20 Hz Bluetooth stream. Once
+  that board has been silent for 2 s, another board can take over (even one
+  that kept sending meanwhile); the app then drops the calibration and asks
+  you to recalibrate.
 * Only one program can listen on the port: close the Python PC dashboard
   (`python -m pc.app.main`) first.
 * Windows Firewall must allow inbound UDP for the app. On a *Public* network,
@@ -111,7 +117,8 @@ resolve both:
 Step 2 can be skipped (**elevation only**). Elevation stays exact, but the
 heading is then estimated from the sensor mounting, so the plane check and
 game control are less precise. Recalibrate whenever the straps move.
-Switching to another sensor source always starts a new calibration.
+Switching to another sensor source, another Wi-Fi board or another patient
+always starts a new calibration.
 
 ## Shoulder abduction
 
@@ -128,7 +135,9 @@ Switching to another sensor source always starts a new calibration.
   phone app's anthropometric model. This is not muscle force.
 
 Automatic MMT suggestion (sitting, against gravity), graded on the attempt
-peak:
+peak. The plane and elbow notes in the suggestion, and the plane and elbow
+angles saved with the record, are taken at that peak, not where the arm is
+when **Record attempt** is pressed:
 
 | Peak elevation | Grade | Note |
 | --- | --- | --- |
@@ -138,9 +147,14 @@ peak:
 | ≥ 80° | 3 Fair | Reaches the 90° test range (10° tolerance) |
 | - | 4-5 | Needs manual resistance: physio confirms with one tap |
 
-Every attempt is saved immediately. The physiotherapist can confirm or
-override any grade; the record keeps both the physio grade and the original
-automatic suggestion.
+Every attempt recorded with a sensor is saved immediately. The
+physiotherapist can confirm or override any grade; the record keeps both the
+physio grade and the original automatic suggestion.
+
+Measuring the other (healthy) arm as a baseline does not change the
+patient's affected side or saved arm dimensions. Set the affected side on the
+patient hub; the arm dimensions entered in Measure are saved with the patient
+only for the affected arm (or when none are saved yet).
 
 ## Fruit PNF game
 
@@ -161,6 +175,8 @@ screen right) and a faint body outline shows the patient's position.
   diagonal's direction) and closeness to the diagonal. Stars: 60% / 80% / 90%.
 * **Bombs** sit off the diagonal to discourage compensation (-20 points, combo
   reset, no game over). They can be switched off.
+* **Pause** (or a sensor dropout) freezes the round. Moving the hand meanwhile
+  slices nothing: the blade restarts from wherever the hand is on resume.
 * **Adaptive size**: the apple size and the diagonal length scale with the
   patient's best recorded shoulder abduction.
 * **Streak**: consecutive days with at least one game.
@@ -199,11 +215,24 @@ app's record log. Phone records without `movement` are read as elbow flexion
 
 Every change is saved locally first
 (`%APPDATA%\Kinetism\desktop-cache.json`) and queued for Firestore. Pending
-writes survive restarts and are retried. Firestore is re-read every 30 s so
-phone records appear here. The top-right chip shows the sync state. If the
-cache file cannot be read at start-up, it is never overwritten: the app moves
-it aside to `desktop-cache.unreadable-<date-time>.json` (records that never
-reached Firestore can be recovered from it) and warns in the status bar.
+writes survive restarts; failed ones are retried every 30 s. Firestore is
+re-read at start-up, every 5 minutes and when you click the sync chip, never
+while a read is still running: each read lists every patient, record and game
+session, and the free plan allows 50,000 document reads a day, shared with the
+phone app. The top-right chip shows the sync state. A reply that is not JSON
+(for example a Wi-Fi sign-in page) counts as a failure, never as a saved
+write or an empty collection. If the cache file cannot be read at start-up,
+it is never overwritten: the app moves it aside to
+`desktop-cache.unreadable-<date-time>.json` (records that never reached
+Firestore can be recovered from it) and warns in the status bar.
+
+Each sync target keeps its own cache file: another project
+(`KINETISM_FIREBASE_PROJECT`) uses `desktop-cache-<project>.json` and
+`KINETISM_OFFLINE` uses `desktop-cache-offline.json`, so test or offline data
+is never sent to the shared project. Pulled numbers that are not finite, and
+arm dimensions outside the form's ranges, are replaced by defaults (the phone
+app's default arm for records, none for a patient), so one bad document cannot
+make the cache unreadable.
 
 > Security: the project currently accepts unauthenticated reads and writes
 > (the phone app has no sign-in). Add Firebase Authentication and restrictive
@@ -213,8 +242,8 @@ reached Firestore can be recovered from it) and warns in the status bar.
 
 | Variable | Effect |
 | --- | --- |
-| `KINETISM_OFFLINE=1` | Local storage only, no Firestore |
-| `KINETISM_FIREBASE_PROJECT` | Use another Firestore project |
+| `KINETISM_OFFLINE=1` | Local storage only, in `desktop-cache-offline.json`. This data is never synced, not even by a later normal run. |
+| `KINETISM_FIREBASE_PROJECT` | Use another Firestore project (with its own cache file) |
 | `KINETISM_DATA_DIR` | Folder for the local cache |
 | `KINETISM_SOURCE=wifi\|bluetooth\|sim` | Connect this sensor source at startup |
 | `KINETISM_UDP_PORT` | UDP port for the Wi-Fi sensor (default 4210) |
@@ -241,7 +270,9 @@ The unit tests cover Bluetooth and `KIN1` packet parsing (including a packet
 captured from a real Wi-Fi sensor), sensor-source switching, calibration with
 arbitrary sensor mounting and heading (both arms), MMT grading, the phone app's
 force model, the Firestore codec (including phone-app documents), apple
-tracing, PNF slicing/bombs/combos, unlocks and streaks.
+tracing, PNF slicing/bombs/combos, unlocks and streaks, and the data-integrity
+rules (patient switching, simulator practice, peak posture, sync write order,
+pull and retry timers, per-target caches and unusable Firestore replies).
 
 ## Troubleshooting
 
@@ -258,3 +289,5 @@ tracing, PNF slicing/bombs/combos, unlocks and streaks.
 | Status bar: *Local cache unreadable … moved to …* | The cache could not be read (for example it was re-saved in another encoding). It was kept as `desktop-cache.unreadable-<date-time>.json`; the app continues from Firestore data. |
 | Status bar: *… Local saving is paused …* | Another program (backup or antivirus) holds the cache open. Close it and restart the app; new records still sync to Firestore. |
 | Sync chip shows an error | Check the internet connection and Firestore rules. Records stay queued locally. |
+| Sync chip: *Firestore reply was not JSON …* | A proxy, firewall or Wi-Fi sign-in page answered instead of Firestore. Sign in to the network or allow `firestore.googleapis.com`; queued writes are retried. |
+| Toast: *New Wi-Fi sensor … please recalibrate* | The followed board was silent for 2 s and another one took over. Recalibrate, and switch off any board that is not strapped to the patient. |

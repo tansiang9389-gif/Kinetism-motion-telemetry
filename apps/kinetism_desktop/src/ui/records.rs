@@ -131,7 +131,8 @@ impl KinetismApp {
                             ""
                         }
                     ));
-                    let pending = self.store.is_record_pending(&r.id);
+                    // Local-only data (demo, KINETISM_OFFLINE) never syncs.
+                    let pending = self.project.is_some() && self.store.is_record_pending(&r.id);
                     ui.label(
                         RichText::new(if pending {
                             "⟳ pending".to_string()

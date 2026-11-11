@@ -35,6 +35,17 @@ impl Voice {
         }
     }
 
+    /// A voice that never speaks and starts no speech engine.
+    #[cfg(test)]
+    pub fn muted() -> Self {
+        Self {
+            tx: None,
+            last: None,
+            enabled: false,
+            error: None,
+        }
+    }
+
     /// Speak unless another line was spoken very recently. `urgent` interrupts.
     pub fn say(&mut self, text: &str, urgent: bool) {
         if !self.enabled {

@@ -38,6 +38,11 @@ pub struct ArmTracker {
     smoother: Smoother,
     pub peak_elevation: f64,
     pub peak_elbow: f64,
+    /// Pose in which `peak_elevation` / `peak_elbow` was reached. An attempt is
+    /// graded on its peak, so posture checks must use the peak's posture too,
+    /// not wherever the arm is when Record is pressed.
+    pub peak_pose: Option<ArmPose>,
+    pub peak_elbow_pose: Option<ArmPose>,
     /// (seconds since start, shoulder elevation, elbow flexion)
     pub history: VecDeque<(f64, f64, Option<f64>)>,
     started: Instant,
@@ -60,6 +65,8 @@ impl ArmTracker {
             smoother: Smoother::default(),
             peak_elevation: 0.0,
             peak_elbow: 0.0,
+            peak_pose: None,
+            peak_elbow_pose: None,
             history: VecDeque::new(),
             started: Instant::now(),
             last_frame_at: None,
@@ -91,6 +98,9 @@ impl ArmTracker {
         self.pose = None;
         self.hand = None;
         self.smoother.reset();
+        // Angles from the old calibration mean nothing under the new one.
+        self.history.clear();
+        self.reset_peaks();
     }
 
     pub fn set_side(&mut self, side: Side) {
@@ -130,6 +140,21 @@ impl ArmTracker {
     pub fn reset_peaks(&mut self) {
         self.peak_elevation = self.pose.map_or(0.0, |p| p.elevation_deg);
         self.peak_elbow = self.pose.and_then(|p| p.elbow_flexion_deg).unwrap_or(0.0);
+        self.peak_pose = self.pose;
+        self.peak_elbow_pose = self.pose.filter(|p| p.elbow_flexion_deg.is_some());
+    }
+
+    fn track_peaks(&mut self, pose: ArmPose) {
+        if pose.elevation_deg > self.peak_elevation || self.peak_pose.is_none() {
+            self.peak_pose = Some(pose);
+        }
+        self.peak_elevation = self.peak_elevation.max(pose.elevation_deg);
+        if let Some(e) = pose.elbow_flexion_deg {
+            if e > self.peak_elbow || self.peak_elbow_pose.is_none() {
+                self.peak_elbow_pose = Some(pose);
+            }
+            self.peak_elbow = self.peak_elbow.max(e);
+        }
     }
 
     pub fn feed(&mut self, frames: &[TimedFrame]) {
@@ -155,10 +180,7 @@ impl ArmTracker {
                 let pose = cal.pose(upper, tf.frame.forearm, self.side);
                 let hand = self.smoother.update(pose.hand, 0.45);
                 self.hand = Some(hand);
-                self.peak_elevation = self.peak_elevation.max(pose.elevation_deg);
-                if let Some(e) = pose.elbow_flexion_deg {
-                    self.peak_elbow = self.peak_elbow.max(e);
-                }
+                self.track_peaks(pose);
                 let t = tf.at.duration_since(self.started).as_secs_f64();
                 self.history
                     .push_back((t, pose.elevation_deg, pose.elbow_flexion_deg));
@@ -588,6 +610,56 @@ mod tests {
         assert!(
             !tracker.moving_warning,
             "a new forward capture starts clean"
+        );
+    }
+
+    #[test]
+    fn peaks_keep_the_posture_they_were_reached_in_until_reset() {
+        let mut sim = SimArm::new(Side::Right);
+        let mut tracker = ArmTracker::new(Side::Right);
+        calibrate(&mut tracker, &mut sim, true);
+        // Swing forward to 95 deg with a bent elbow, curl the elbow lower down,
+        // then rest the arm near the side.
+        for (elevation, plane, elbow) in
+            [(95.0, 80.0, 40.0), (30.0, 0.0, 100.0), (20.0, 10.0, 10.0)]
+        {
+            sim.elevation_deg = elevation;
+            sim.plane_deg = plane;
+            sim.elbow_deg = elbow;
+            tracker.feed(&frames(&sim, 1, true));
+        }
+        let near =
+            |value: Option<f64>, expected: f64| value.is_some_and(|v| (v - expected).abs() < 0.5);
+        let peak = tracker.peak_pose.expect("pose at the shoulder peak");
+        assert!((tracker.peak_elevation - 95.0).abs() < 0.5);
+        assert_eq!(peak.elevation_deg, tracker.peak_elevation);
+        assert!(
+            near(peak.plane_deg, 80.0) && near(peak.elbow_flexion_deg, 40.0),
+            "the peak's own plane and elbow: {peak:?}"
+        );
+        let elbow_peak = tracker.peak_elbow_pose.expect("pose at the elbow peak");
+        assert!((tracker.peak_elbow - 100.0).abs() < 0.5);
+        assert!(
+            (elbow_peak.elevation_deg - 30.0).abs() < 0.5 && near(elbow_peak.plane_deg, 0.0),
+            "{elbow_peak:?}"
+        );
+        let now = tracker.pose.expect("current pose");
+        assert!(near(now.plane_deg, 10.0), "the arm is back near the side");
+
+        tracker.reset_peaks();
+        assert_eq!(
+            tracker.peak_pose,
+            Some(now),
+            "a reset starts from the current pose"
+        );
+        assert_eq!(tracker.peak_elbow_pose, Some(now));
+
+        tracker.recalibrate();
+        assert_eq!((tracker.peak_elevation, tracker.peak_elbow), (0.0, 0.0));
+        assert!(tracker.peak_pose.is_none() && tracker.peak_elbow_pose.is_none());
+        assert!(
+            tracker.history.is_empty(),
+            "no angle trace from the old calibration"
         );
     }
 

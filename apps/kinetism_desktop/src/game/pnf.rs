@@ -266,6 +266,11 @@ impl PnfRound {
         });
     }
 
+    /// Forget the last hand position: the next update slices from where the hand is then.
+    pub fn interrupt(&mut self) {
+        self.prev = None;
+    }
+
     pub fn update(&mut self, hand: Pt, dt: f64) -> Vec<PnfEvent> {
         let mut events = Vec::new();
         self.phase_time += dt;

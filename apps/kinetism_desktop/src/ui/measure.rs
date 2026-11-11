@@ -2,10 +2,11 @@
 
 use crate::app::{KinetismApp, MeasureStage, Screen};
 use crate::clinical::{
-    Movement, PHONE_APP_DEFAULT_ACCEL_G, Side, grade_elbow_flexion, grade_shoulder_abduction,
-    mmt_title,
+    Anthropometrics, MmtResult, Movement, PHONE_APP_DEFAULT_ACCEL_G, Side, grade_elbow_flexion,
+    grade_shoulder_abduction, mmt_title,
 };
-use crate::model::{MeasurementRecord, MmtSource, SOURCE_DESKTOP, new_id};
+use crate::kinematics::ArmPose;
+use crate::model::{MeasurementRecord, MmtSource, Patient, SOURCE_DESKTOP, new_id};
 use crate::theme;
 use crate::tracker::CalStep;
 use crate::ui::{self, card, figures};
@@ -65,12 +66,20 @@ impl KinetismApp {
             if side != self.side() {
                 self.set_side(side);
             }
+            if let Some(affected) = self.current_patient().and_then(|p| p.affected_side)
+                && affected != self.side()
+            {
+                ui.label(ui::small(format!(
+                    "Baseline on the other arm: the affected side stays {}.",
+                    affected.label()
+                )));
+            }
         });
         ui.add_space(8.0);
         card(ui, |ui| {
             ui.label(RichText::new("Arm dimensions (for load estimates)").strong());
             ui.label(ui::small(
-                "Same inputs as the phone app. Saved to the patient record.",
+                "Same inputs as the phone app. The affected arm's dimensions are saved with the patient.",
             ));
             egui::Grid::new("arm_dims")
                 .num_columns(3)
@@ -117,11 +126,10 @@ impl KinetismApp {
                 Err(e) => self.measure.error = Some(e),
                 Ok(()) => {
                     self.measure.error = None;
-                    if let Some(mut p) = self.current_patient()
-                        && (p.arm != Some(arm) || p.affected_side != Some(self.side()))
+                    if let Some(mut p) = self
+                        .current_patient()
+                        .and_then(|p| patient_after_setup(&p, self.side(), arm))
                     {
-                        p.arm = Some(arm);
-                        p.affected_side = Some(self.side());
                         p.updated_at = Some(chrono::Utc::now());
                         self.store.upsert_patient(p);
                     }
@@ -227,34 +235,41 @@ impl KinetismApp {
         let movement = self.measure.movement;
         let arm = self.arm();
         let pose = self.tracker.pose;
-        let (current, peak) = match movement {
-            Movement::ShoulderAbduction => {
-                (pose.map(|p| p.elevation_deg), self.tracker.peak_elevation)
-            }
+        let (current, peak, peak_pose) = match movement {
+            Movement::ShoulderAbduction => (
+                pose.map(|p| p.elevation_deg),
+                self.tracker.peak_elevation,
+                self.tracker.peak_pose,
+            ),
             Movement::ElbowFlexion => (
                 pose.and_then(|p| p.elbow_flexion_deg),
                 self.tracker.peak_elbow,
+                self.tracker.peak_elbow_pose,
             ),
         };
-        let (mmt, force, torque) = match movement {
+        let angle = current.unwrap_or(0.0);
+        let (force, torque) = match movement {
             Movement::ShoulderAbduction => (
-                grade_shoulder_abduction(
-                    peak,
-                    pose.and_then(|p| p.elbow_flexion_deg),
-                    pose.and_then(|p| p.plane_deg),
-                ),
-                arm.shoulder_load_newtons(current.unwrap_or(0.0)),
-                Some(arm.shoulder_torque_nm(current.unwrap_or(0.0))),
+                arm.shoulder_load_newtons(angle),
+                Some(arm.shoulder_torque_nm(angle)),
             ),
-            Movement::ElbowFlexion => {
-                let f = arm.elbow_force_newtons(peak, PHONE_APP_DEFAULT_ACCEL_G);
-                (
-                    grade_elbow_flexion(peak, f, &arm),
-                    arm.elbow_force_newtons(current.unwrap_or(0.0), PHONE_APP_DEFAULT_ACCEL_G),
-                    None,
-                )
-            }
+            Movement::ElbowFlexion => (
+                arm.elbow_force_newtons(angle, PHONE_APP_DEFAULT_ACCEL_G),
+                None,
+            ),
         };
+        let attempt = Attempt {
+            movement,
+            side: self.side(),
+            arm,
+            angle,
+            force,
+            torque,
+            peak,
+            peak_pose,
+        };
+        let mmt = attempt.grade();
+        let practice = self.practice_only();
         ui.horizontal(|ui| {
             ui.vertical(|ui| {
                 ui::eyebrow(ui, "Step 5 · Live measurement");
@@ -374,7 +389,7 @@ impl KinetismApp {
                     ui.horizontal(|ui| {
                         record_clicked = ui::primary_enabled(
                             ui,
-                            !stale && current.is_some(),
+                            !stale && current.is_some() && !practice,
                             "● Record attempt",
                         )
                         .clicked();
@@ -382,13 +397,18 @@ impl KinetismApp {
                             self.tracker.reset_peaks();
                         }
                     });
+                    if practice {
+                        ui.label(
+                            RichText::new("Simulator: practice only, not saved").color(theme::WARN),
+                        );
+                    }
                 });
                 ui.add_space(8.0);
                 self.angle_trace(ui, movement);
             });
         });
         if record_clicked {
-            self.record_attempt(movement, current.unwrap_or(0.0), peak, force, torque);
+            self.record_attempt(&attempt);
         }
         self.last_record_card(ui);
     }
@@ -426,78 +446,40 @@ impl KinetismApp {
         );
     }
 
-    fn record_attempt(
-        &mut self,
-        movement: Movement,
-        angle: f64,
-        peak: f64,
-        force: f64,
-        torque: Option<f64>,
-    ) {
+    /// Saves the attempt for the current patient. Simulator data never becomes
+    /// a patient record (demo mode excepted).
+    fn record_attempt(&mut self, attempt: &Attempt) {
         let Some(patient) = self.current_patient() else {
             return;
         };
-        let arm = self.arm();
-        let pose = self.tracker.pose;
-        let mmt = match movement {
-            Movement::ShoulderAbduction => grade_shoulder_abduction(
-                peak,
-                pose.and_then(|p| p.elbow_flexion_deg),
-                pose.and_then(|p| p.plane_deg),
-            ),
-            Movement::ElbowFlexion => grade_elbow_flexion(
-                peak,
-                arm.elbow_force_newtons(peak, PHONE_APP_DEFAULT_ACCEL_G),
-                &arm,
-            ),
-        };
-        let attempt = self
+        if self.practice_only() {
+            return;
+        }
+        let number = self
             .store
             .records_for(&patient.id)
             .iter()
-            .filter(|r| r.movement == movement)
+            .filter(|r| r.movement == attempt.movement)
             .count() as u32
             + 1;
-        let record = MeasurementRecord {
-            id: new_id("rec"),
-            patient_id: patient.id.clone(),
-            patient_name: patient.name.clone(),
-            body_part: movement.body_part().into(),
-            movement,
-            side: Some(self.side()),
-            arm,
-            angle_degrees: (angle * 10.0).round() / 10.0,
-            peak_angle_degrees: Some((peak * 10.0).round() / 10.0),
-            force_newtons: force,
-            torque_nm: torque,
-            mmt_grade: mmt.grade,
-            mmt_title: mmt.title.clone(),
-            mmt_rationale: mmt.rationale.clone(),
-            mmt_source: MmtSource::Auto,
-            auto_mmt_grade: Some(mmt.grade),
-            attempt_number: attempt,
-            elbow_flexion_degrees: pose
-                .and_then(|p| p.elbow_flexion_deg)
-                .map(|v| (v * 10.0).round() / 10.0),
-            plane_degrees: pose
-                .and_then(|p| p.plane_deg)
-                .map(|v| (v * 10.0).round() / 10.0),
-            recorded_at: Some(chrono::Utc::now()),
-            source: SOURCE_DESKTOP.into(),
-        };
+        let record = attempt.record(&patient, number);
+        let badge = record.badge();
         self.measure.last_record = Some(record.id.clone());
         self.store.add_record(record);
         self.tracker.reset_peaks();
         self.voice
-            .say(&format!("Recorded. {:.0} degrees.", peak), true);
-        self.toast(format!("Attempt #{attempt} saved · {}", mmt.badge()), false);
+            .say(&format!("Recorded. {:.0} degrees.", attempt.peak), true);
+        self.toast(format!("Attempt #{number} saved · {badge}"), false);
     }
 
     fn last_record_card(&mut self, ui: &mut egui::Ui) {
         let Some(id) = self.measure.last_record.clone() else {
             return;
         };
-        let Some(record) = self.store.records.iter().find(|r| r.id == id).cloned() else {
+        let Some(patient) = self.current_patient() else {
+            return;
+        };
+        let Some(record) = self.store.patient_record(&patient.id, &id).cloned() else {
             return;
         };
         ui.add_space(8.0);
@@ -505,7 +487,11 @@ impl KinetismApp {
         ui::tinted_card(ui, theme::grade_color(record.mmt_grade), |ui| {
             ui.horizontal(|ui| {
                 ui.label(
-                    RichText::new(format!("✓ Attempt #{} saved", record.attempt_number)).strong(),
+                    RichText::new(format!(
+                        "✓ Attempt #{} saved for {}",
+                        record.attempt_number, record.patient_name
+                    ))
+                    .strong(),
                 );
                 ui.label(ui::small(format!(
                     "{:.1}° at record · peak {:.1}° · {:.1} N · {}{}",
@@ -519,10 +505,13 @@ impl KinetismApp {
                         " (auto)"
                     }
                 )));
-                if self.store.is_record_pending(&record.id) {
-                    ui::chip(ui, "waiting for Firestore", theme::WARN);
-                } else if self.project.is_some() {
-                    ui::chip(ui, "saved to Firestore", theme::GOOD);
+                // Local-only data (demo, KINETISM_OFFLINE) never syncs.
+                if self.project.is_some() {
+                    if self.store.is_record_pending(&record.id) {
+                        ui::chip(ui, "waiting for Firestore", theme::WARN);
+                    } else {
+                        ui::chip(ui, "saved to Firestore", theme::GOOD);
+                    }
                 }
             });
             ui.horizontal_wrapped(|ui| {
@@ -571,6 +560,81 @@ impl KinetismApp {
     }
 }
 
+/// One captured attempt, before it becomes a record.
+struct Attempt {
+    movement: Movement,
+    side: Side,
+    arm: Anthropometrics,
+    /// Angle when Record is pressed, with the load at that angle.
+    angle: f64,
+    force: f64,
+    torque: Option<f64>,
+    /// Highest angle of the attempt and the arm's posture at that moment.
+    peak: f64,
+    peak_pose: Option<ArmPose>,
+}
+
+impl Attempt {
+    /// Automatic grade, judged at the peak: its angle and its posture.
+    fn grade(&self) -> MmtResult {
+        match self.movement {
+            Movement::ShoulderAbduction => grade_shoulder_abduction(
+                self.peak,
+                self.peak_pose.and_then(|p| p.elbow_flexion_deg),
+                self.peak_pose.and_then(|p| p.plane_deg),
+            ),
+            Movement::ElbowFlexion => grade_elbow_flexion(
+                self.peak,
+                self.arm
+                    .elbow_force_newtons(self.peak, PHONE_APP_DEFAULT_ACCEL_G),
+                &self.arm,
+            ),
+        }
+    }
+
+    /// The record saved as attempt `number`; elbow and plane describe the peak.
+    fn record(&self, patient: &Patient, number: u32) -> MeasurementRecord {
+        let mmt = self.grade();
+        let round1 = |v: f64| (v * 10.0).round() / 10.0;
+        MeasurementRecord {
+            id: new_id("rec"),
+            patient_id: patient.id.clone(),
+            patient_name: patient.name.clone(),
+            body_part: self.movement.body_part().into(),
+            movement: self.movement,
+            side: Some(self.side),
+            arm: self.arm,
+            angle_degrees: round1(self.angle),
+            peak_angle_degrees: Some(round1(self.peak)),
+            force_newtons: self.force,
+            torque_nm: self.torque,
+            mmt_grade: mmt.grade,
+            mmt_title: mmt.title,
+            mmt_rationale: mmt.rationale,
+            mmt_source: MmtSource::Auto,
+            auto_mmt_grade: Some(mmt.grade),
+            attempt_number: number,
+            elbow_flexion_degrees: self.peak_pose.and_then(|p| p.elbow_flexion_deg).map(round1),
+            plane_degrees: self.peak_pose.and_then(|p| p.plane_deg).map(round1),
+            recorded_at: Some(chrono::Utc::now()),
+            source: SOURCE_DESKTOP.into(),
+        }
+    }
+}
+
+/// What Continue saves to the patient, or `None` if nothing changes. The
+/// measured side only becomes the affected side when none is set (the hub
+/// changes it), and arm dimensions are only saved for the affected arm or
+/// when none are known: a baseline on the healthy arm overwrites neither.
+fn patient_after_setup(patient: &Patient, measured: Side, arm: Anthropometrics) -> Option<Patient> {
+    let mut updated = patient.clone();
+    let affected = *updated.affected_side.get_or_insert(measured);
+    if measured == affected || updated.arm.is_none() {
+        updated.arm = Some(arm);
+    }
+    (updated != *patient).then_some(updated)
+}
+
 const AUTO_MARKER: &str = " | Auto suggestion ";
 
 /// The automatic rationale, also when the record was already physio-graded.
@@ -584,7 +648,12 @@ fn auto_rationale(r: &MeasurementRecord) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::clinical::Anthropometrics;
+    use crate::app::tests::{demo, test_app, test_dir};
+    use crate::kinematics::{SAMPLES_PER_POSE, SimArm};
+    use crate::sensor::frame::SensorFrame;
+    use crate::sensor::{Source, TimedFrame};
+    use crate::tracker::ArmTracker;
+    use std::time::Instant;
 
     fn record(rationale: &str) -> MeasurementRecord {
         MeasurementRecord {
@@ -645,5 +714,204 @@ mod tests {
         );
         let phone = record("Entered on the phone");
         assert_eq!(auto_rationale(&phone), "Entered on the phone");
+    }
+
+    fn patient(arm: Option<Anthropometrics>, affected_side: Option<Side>) -> Patient {
+        Patient {
+            id: "p1".into(),
+            name: "Pat".into(),
+            code: "PT-1".into(),
+            arm,
+            affected_side,
+            updated_at: None,
+        }
+    }
+
+    #[test]
+    fn a_baseline_on_the_healthy_arm_keeps_the_affected_side_and_its_dimensions() {
+        let affected_arm = Anthropometrics {
+            bicep_cm: 31.0,
+            forearm_cm: 26.0,
+            arm_length_cm: 57.0,
+        };
+        let healthy_arm = Anthropometrics::default();
+        let stroke = patient(Some(affected_arm), Some(Side::Left));
+        assert_eq!(
+            patient_after_setup(&stroke, Side::Right, healthy_arm),
+            None,
+            "measuring the healthy arm changes nothing on the patient"
+        );
+        assert_eq!(
+            patient_after_setup(&stroke, Side::Left, affected_arm),
+            None,
+            "unchanged dimensions are not re-saved"
+        );
+        let remeasured =
+            patient_after_setup(&stroke, Side::Left, healthy_arm).expect("new affected-arm sizes");
+        assert_eq!(
+            (remeasured.affected_side, remeasured.arm),
+            (Some(Side::Left), Some(healthy_arm))
+        );
+
+        let new = patient(None, None);
+        let first = patient_after_setup(&new, Side::Right, healthy_arm).expect("first setup");
+        assert_eq!(
+            (first.affected_side, first.arm),
+            (Some(Side::Right), Some(healthy_arm)),
+            "the first measured side becomes the affected side"
+        );
+        let no_sizes = patient(None, Some(Side::Left));
+        let baseline = patient_after_setup(&no_sizes, Side::Right, healthy_arm)
+            .expect("sizes better than none");
+        assert_eq!(
+            (baseline.affected_side, baseline.arm),
+            (Some(Side::Left), Some(healthy_arm))
+        );
+    }
+
+    fn feed(tracker: &mut ArmTracker, sim: &SimArm, n: usize) {
+        let (upper, forearm) = sim.quats();
+        let frames: Vec<TimedFrame> = (0..n)
+            .map(|_| TimedFrame {
+                frame: SensorFrame {
+                    upper: Some(upper),
+                    forearm: Some(forearm),
+                },
+                at: Instant::now(),
+            })
+            .collect();
+        tracker.feed(&frames);
+    }
+
+    fn calibrated(sim: &mut SimArm) -> ArmTracker {
+        let mut tracker = ArmTracker::new(sim.side);
+        tracker.start_rest_capture();
+        feed(&mut tracker, sim, SAMPLES_PER_POSE);
+        (sim.elevation_deg, sim.plane_deg) = (60.0, 90.0);
+        tracker.start_forward_capture();
+        feed(&mut tracker, sim, SAMPLES_PER_POSE);
+        assert!(tracker.is_calibrated());
+        tracker.reset_peaks();
+        tracker
+    }
+
+    /// Attempt as the Live screen builds it from the tracker.
+    fn attempt(tracker: &ArmTracker, movement: Movement) -> Attempt {
+        let pose = tracker.pose.expect("live pose");
+        let (angle, peak, peak_pose) = match movement {
+            Movement::ShoulderAbduction => (
+                pose.elevation_deg,
+                tracker.peak_elevation,
+                tracker.peak_pose,
+            ),
+            Movement::ElbowFlexion => (
+                pose.elbow_flexion_deg.expect("elbow angle"),
+                tracker.peak_elbow,
+                tracker.peak_elbow_pose,
+            ),
+        };
+        Attempt {
+            movement,
+            side: tracker.side,
+            arm: Anthropometrics::default(),
+            angle,
+            force: 0.0,
+            torque: None,
+            peak,
+            peak_pose,
+        }
+    }
+
+    #[test]
+    fn a_forward_swing_is_graded_and_saved_with_the_posture_of_its_peak() {
+        let mut sim = SimArm::new(Side::Right);
+        let mut tracker = calibrated(&mut sim);
+        // Swing forward to 95 deg in the sagittal plane, then lower the arm to the side.
+        for (elevation, plane) in [(95.0, 80.0), (40.0, 0.0)] {
+            (sim.elevation_deg, sim.plane_deg) = (elevation, plane);
+            feed(&mut tracker, &sim, 1);
+        }
+        let shoulder = attempt(&tracker, Movement::ShoulderAbduction);
+        let near = |v: Option<f64>, expected: f64| v.is_some_and(|v| (v - expected).abs() < 0.5);
+        assert!(
+            near(Some(shoulder.angle), 40.0) && near(Some(shoulder.peak), 95.0),
+            "pressed at 40 deg after a 95 deg peak"
+        );
+        let record = shoulder.record(&patient(None, Some(Side::Right)), 1);
+        assert_eq!(record.mmt_grade, 3, "graded on the peak");
+        assert!(
+            record
+                .mmt_rationale
+                .contains("Arm drifted forward into flexion (80 deg"),
+            "the peak's forward drift is flagged: {}",
+            record.mmt_rationale
+        );
+        assert!(
+            near(record.plane_degrees, 80.0) && near(record.peak_angle_degrees, 95.0),
+            "the stored plane is the peak's: {:?}",
+            record.plane_degrees
+        );
+        let at_press = tracker.pose.and_then(|p| p.plane_deg);
+        assert!(
+            near(at_press, 0.0)
+                && !grade_shoulder_abduction(shoulder.peak, None, at_press)
+                    .rationale
+                    .contains("drifted"),
+            "the posture when Record is pressed would hide the swing"
+        );
+
+        // Elbow flexion: curl to 100 deg with the arm at the side, then lift and relax.
+        for (elevation, plane, elbow) in [(30.0, 0.0, 100.0), (50.0, 60.0, 10.0)] {
+            (sim.elevation_deg, sim.plane_deg, sim.elbow_deg) = (elevation, plane, elbow);
+            feed(&mut tracker, &sim, 1);
+        }
+        let elbow =
+            attempt(&tracker, Movement::ElbowFlexion).record(&patient(None, Some(Side::Right)), 1);
+        assert!(
+            near(elbow.peak_angle_degrees, 100.0)
+                && near(elbow.elbow_flexion_degrees, 100.0)
+                && near(elbow.plane_degrees, 0.0),
+            "elbow records describe their own peak: {elbow:?}"
+        );
+    }
+
+    #[test]
+    fn simulator_attempts_are_practice_only_outside_demo_mode() {
+        let dir = test_dir("practice");
+        let mut app = test_app(&dir);
+        app.store.upsert_patient(patient(None, Some(Side::Right)));
+        app.select_patient("p1", false);
+        let mut sim = SimArm::new(Side::Right);
+        let mut tracker = calibrated(&mut sim);
+        sim.elevation_deg = 85.0;
+        feed(&mut tracker, &sim, 1);
+        let shoulder = attempt(&tracker, Movement::ShoulderAbduction);
+
+        app.switch_source(Source::Simulator);
+        assert!(app.practice_only());
+        app.record_attempt(&shoulder);
+        assert!(
+            app.store.records.is_empty() && app.measure.last_record.is_none(),
+            "simulated attempts are not saved or synced"
+        );
+
+        app.demo = Some(demo("measure"));
+        assert!(
+            !app.practice_only(),
+            "demo mode saves to its throwaway store"
+        );
+        app.record_attempt(&shoulder);
+        assert_eq!(app.store.records.len(), 1);
+
+        app.demo = None;
+        app.switch_source(Source::None);
+        assert!(!app.practice_only(), "real sensors save");
+        app.record_attempt(&shoulder);
+        assert_eq!(app.store.records.len(), 2);
+        assert_eq!(
+            app.store.records[0].id,
+            app.measure.last_record.clone().unwrap_or_default()
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -4,14 +4,16 @@ use crate::clinical::{Anthropometrics, Movement, Muscle, Side};
 use crate::game::fx::Fx;
 use crate::game::{Game, GameEvent, Stage};
 use crate::model::{GameLevel, GameSession, Patient};
+use crate::sensor::udp::LocalIpCache;
 use crate::sensor::{LinkState, SensorHub, Source};
 use crate::sim::{SimDriver, SimInput};
-use crate::store::{DataStore, firestore};
+use crate::store::{DataStore, cache_file_name, firestore};
 use crate::theme;
 use crate::tracker::ArmTracker;
 use crate::ui;
 use crate::voice::Voice;
 use eframe::egui::{self, Align, Color32, Layout, Margin, RichText};
+use std::net::IpAddr;
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -117,6 +119,9 @@ pub struct KinetismApp {
     pub toast: Option<Toast>,
     pub demo: Option<Demo>,
     pub project: Option<String>,
+    /// Wi-Fi board seen last; another one means a new calibration.
+    wifi_sender: Option<IpAddr>,
+    local_ip: LocalIpCache,
 }
 
 fn env(name: &str) -> Option<String> {
@@ -157,15 +162,44 @@ impl KinetismApp {
             runtime.handle(),
             cc.egui_ctx.clone(),
             project.clone(),
-            data_dir,
+            data_dir.join(cache_file_name(project.as_deref())),
         );
         let udp_port = env("KINETISM_UDP_PORT")
             .and_then(|p| p.parse().ok())
             .unwrap_or(crate::sensor::udp::DEFAULT_PORT);
         let sensor = SensorHub::new(runtime.handle(), cc.egui_ctx.clone(), udp_port);
-        let side = store.settings.side;
         let voice = Voice::new(store.settings.voice && demo.is_none());
-        let mut app = Self {
+        let mut app = Self::assemble(runtime, store, sensor, voice, demo, project);
+        let start_source = if app.demo.is_some() || env("KINETISM_SIM").is_some() {
+            Some(Source::Simulator)
+        } else {
+            env("KINETISM_SOURCE").and_then(|s| Source::from_key(&s))
+        };
+        if let Some(source) = start_source {
+            app.switch_source(source);
+        }
+        if let Some(id) = app.store.settings.selected_patient.clone()
+            && app.store.patient(&id).is_some()
+        {
+            app.select_patient(&id, false);
+        }
+        if app.demo.is_some() {
+            crate::demo::setup(&mut app);
+        }
+        app
+    }
+
+    /// The app in its start state (no patient open, nothing connected).
+    fn assemble(
+        runtime: tokio::runtime::Runtime,
+        store: DataStore,
+        sensor: SensorHub,
+        voice: Voice,
+        demo: Option<Demo>,
+        project: Option<String>,
+    ) -> Self {
+        let side = store.settings.side;
+        Self {
             _runtime: runtime,
             tracker: ArmTracker::new(side),
             sim: SimDriver::new(side),
@@ -204,24 +238,9 @@ impl KinetismApp {
             project,
             store,
             sensor,
-        };
-        let start_source = if app.demo.is_some() || env("KINETISM_SIM").is_some() {
-            Some(Source::Simulator)
-        } else {
-            env("KINETISM_SOURCE").and_then(|s| Source::from_key(&s))
-        };
-        if let Some(source) = start_source {
-            app.switch_source(source);
+            wifi_sender: None,
+            local_ip: LocalIpCache::default(),
         }
-        if let Some(id) = app.store.settings.selected_patient.clone()
-            && app.store.patient(&id).is_some()
-        {
-            app.select_patient(&id, false);
-        }
-        if app.demo.is_some() {
-            crate::demo::setup(&mut app);
-        }
-        app
     }
 
     pub fn current_patient(&self) -> Option<Patient> {
@@ -238,6 +257,9 @@ impl KinetismApp {
     }
 
     pub fn select_patient(&mut self, id: &str, navigate: bool) {
+        if self.store.settings.selected_patient.as_deref() != Some(id) {
+            self.forget_previous_patient();
+        }
         self.store.settings.selected_patient = Some(id.to_string());
         if let Some(p) = self.store.patient(id).cloned() {
             let side = p.affected_side.unwrap_or(self.store.settings.side);
@@ -251,6 +273,19 @@ impl KinetismApp {
         if navigate {
             self.screen = Screen::Hub;
         }
+    }
+
+    /// Another patient wears re-strapped sensors: their calibration, last
+    /// attempt and game must never carry over to the next patient.
+    fn forget_previous_patient(&mut self) {
+        self.tracker.recalibrate();
+        self.measure.stage = MeasureStage::Setup;
+        self.measure.error = None;
+        self.measure.last_record = None;
+        self.play.game = None;
+        self.play.result = None;
+        self.play.unlocked = None;
+        self.play.paused = false;
     }
 
     pub fn set_side(&mut self, side: Side) {
@@ -293,6 +328,12 @@ impl KinetismApp {
         self.sensor.source() == Source::Simulator
     }
 
+    /// Simulator data is never saved as patient data, except in demo mode,
+    /// whose throwaway store never syncs.
+    pub fn practice_only(&self) -> bool {
+        self.simulated() && self.demo.is_none()
+    }
+
     /// Change the sensor input. A different sensor (or mounting) needs a new calibration.
     pub fn switch_source(&mut self, source: Source) {
         match source {
@@ -301,8 +342,20 @@ impl KinetismApp {
             Source::Simulator => self.sensor.start_simulation(),
             Source::None => self.sensor.disconnect(),
         }
+        self.wifi_sender = None;
         if source != Source::None {
             self.tracker.recalibrate();
+        }
+    }
+
+    /// A different Wi-Fi board took over: its mounting and heading are unknown.
+    fn note_wifi_sender(&mut self, sender: Option<IpAddr>) {
+        let Some(ip) = sender else {
+            return;
+        };
+        if self.wifi_sender.replace(ip).is_some_and(|old| old != ip) {
+            self.tracker.recalibrate();
+            self.toast(format!("New Wi-Fi sensor {ip}: please recalibrate."), true);
         }
     }
 
@@ -471,7 +524,9 @@ impl KinetismApp {
                 ));
             }
             LinkState::Listening(_) => {
-                let ip = crate::sensor::udp::local_ip()
+                let ip = self
+                    .local_ip
+                    .get()
                     .map_or("this PC's IP".to_string(), |ip| ip.to_string());
                 r.on_hover_text(format!(
                     "No KIN1 packets yet. Check that the Wi-Fi sensor is switched on and joined the same network, \
@@ -655,16 +710,20 @@ impl KinetismApp {
     /// reps and save a low score.
     fn update_game(&mut self, dt: f64) {
         self.play.fx.update(dt);
-        let Some(hand) = self.tracker.hand else {
-            return;
-        };
+        let following = !self.play.paused && self.tracker.has_live_data();
+        let hand = self.tracker.hand.filter(|_| following);
         let elevation = self.tracker.pose.map_or(0.0, |p| p.elevation_deg);
         let Some(game) = self.play.game.as_mut() else {
             return;
         };
-        if self.play.paused || !self.tracker.has_live_data() || game.stage == Stage::Finished {
+        if game.stage == Stage::Finished {
             return;
         }
+        let Some(hand) = hand else {
+            // The hand may move while it is not followed: no slice across the gap.
+            game.interrupt();
+            return;
+        };
         if game.stage == Stage::Playing {
             self.play.fx.add_trail(hand);
         }
@@ -689,6 +748,8 @@ impl eframe::App for KinetismApp {
             self.sim.tick(&self.sensor, dt);
         }
         let frames = self.sensor.drain();
+        // After draining, so frames from a new board are never fed to the old calibration.
+        self.note_wifi_sender(self.sensor.stats().wifi_sender);
         self.tracker.feed(&frames);
         self.update_game(dt);
 
@@ -735,5 +796,216 @@ impl eframe::App for KinetismApp {
 
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
         Color32::from_rgb(0x10, 0x1B, 0x22).to_normalized_gamma_f32()
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::*;
+    use crate::game::{APPLES_PER_ROUND, Mode, is_unlocked};
+    use crate::kinematics::{SAMPLES_PER_POSE, SimArm};
+    use crate::sensor::TimedFrame;
+    use crate::sensor::frame::SensorFrame;
+    use std::path::Path;
+
+    /// Scratch folder under the git-ignored `target` directory.
+    pub(crate) fn test_dir(name: &str) -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join("test-data")
+            .join(crate::model::new_id(name))
+    }
+
+    /// The app without a window: a local-only store in `dir`, sensor tasks on
+    /// a runtime that is never driven (no radio, no socket) and no speech.
+    pub(crate) fn test_app(dir: &Path) -> KinetismApp {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("runtime");
+        let ctx = egui::Context::default();
+        let store = DataStore::open(
+            runtime.handle(),
+            ctx.clone(),
+            None,
+            dir.join(cache_file_name(None)),
+        );
+        let sensor = SensorHub::new(runtime.handle(), ctx, 0);
+        KinetismApp::assemble(runtime, store, sensor, Voice::muted(), None, None)
+    }
+
+    pub(crate) fn demo(scenario: &str) -> Demo {
+        Demo {
+            scenario: scenario.into(),
+            screenshot: None,
+            started: Instant::now(),
+            delay: 6.0,
+            requested: false,
+            clock: 0.0,
+            cal_timer: 0.0,
+        }
+    }
+
+    fn patient(id: &str) -> Patient {
+        Patient {
+            id: id.into(),
+            name: format!("Patient {id}"),
+            code: id.to_uppercase(),
+            arm: None,
+            affected_side: Some(Side::Right),
+            updated_at: None,
+        }
+    }
+
+    /// Rest-only calibration from simulated sensor frames.
+    fn calibrate(tracker: &mut ArmTracker) {
+        let (upper, forearm) = SimArm::new(tracker.side).quats();
+        let frames: Vec<TimedFrame> = (0..SAMPLES_PER_POSE)
+            .map(|_| TimedFrame {
+                frame: SensorFrame {
+                    upper: Some(upper),
+                    forearm: Some(forearm),
+                },
+                at: Instant::now(),
+            })
+            .collect();
+        tracker.start_rest_capture();
+        tracker.feed(&frames);
+        tracker.skip_forward_pose();
+        assert!(tracker.is_calibrated());
+    }
+
+    #[test]
+    fn opening_another_patient_starts_over_but_reopening_the_same_one_does_not() {
+        let dir = test_dir("switch");
+        let mut app = test_app(&dir);
+        for id in ["p1", "p2"] {
+            app.store.upsert_patient(patient(id));
+        }
+        app.select_patient("p1", true);
+        calibrate(&mut app.tracker);
+        app.measure.stage = MeasureStage::Live;
+        app.measure.last_record = Some("rec-p1".into());
+        app.play.game = Some(Game::new(GameLevel::PnfD1, Side::Right, None, 8, true, 1));
+        app.play.paused = true;
+        app.play.unlocked = Some(GameLevel::PnfD2);
+
+        app.select_patient("p1", true);
+        assert!(app.tracker.is_calibrated(), "same patient, same straps");
+        assert_eq!(
+            (app.measure.stage, app.measure.last_record.as_deref()),
+            (MeasureStage::Live, Some("rec-p1"))
+        );
+        assert!(app.play.game.is_some());
+
+        app.select_patient("p2", true);
+        assert!(
+            !app.tracker.is_calibrated(),
+            "both patients have the right arm affected, yet the straps were redone"
+        );
+        assert_eq!(
+            app.measure.stage,
+            MeasureStage::Setup,
+            "Continue leads to calibration, not straight to Live"
+        );
+        assert!(
+            app.measure.last_record.is_none(),
+            "patient 1's attempt card and grade buttons are gone"
+        );
+        assert!(app.play.game.is_none() && app.play.result.is_none());
+        assert!(app.play.unlocked.is_none() && !app.play.paused);
+        assert_eq!(app.screen, Screen::Hub);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Ends a Level 0 round at 95 %, as the game loop would.
+    fn finish_round(app: &mut KinetismApp) {
+        app.start_game(GameLevel::AppleTrace);
+        let game = app.play.game.as_mut().expect("a running game");
+        if let Mode::Apple(round) = &mut game.mode {
+            round.scores = vec![0.95; APPLES_PER_ROUND as usize];
+            round.done = APPLES_PER_ROUND;
+        }
+        game.stage = Stage::Finished;
+        let finished = GameEvent::Finished {
+            score: game.final_score(),
+            stars: game.stars(),
+        };
+        app.handle_game_events(&[finished]);
+    }
+
+    #[test]
+    fn a_simulator_round_is_shown_but_never_saved_or_unlocking() {
+        let dir = test_dir("practice-game");
+        let mut app = test_app(&dir);
+        app.store.upsert_patient(patient("p1"));
+        app.select_patient("p1", false);
+
+        app.switch_source(Source::Simulator);
+        finish_round(&mut app);
+        let shown = app.play.result.clone().expect("the result is shown");
+        assert_eq!(shown.score_percent, 95.0);
+        assert!(app.store.games.is_empty(), "not saved or synced");
+        assert!(app.play.unlocked.is_none());
+        assert!(!is_unlocked(
+            &app.store.games_for("p1"),
+            GameLevel::PnfD1,
+            false
+        ));
+
+        app.demo = Some(demo("result"));
+        finish_round(&mut app);
+        assert_eq!(
+            app.store.games.len(),
+            1,
+            "demo mode keeps saving to its throwaway store"
+        );
+        assert_eq!(app.play.unlocked, Some(GameLevel::PnfD1));
+
+        app.demo = None;
+        app.switch_source(Source::None);
+        finish_round(&mut app);
+        assert_eq!(
+            app.store.games.len(),
+            2,
+            "rounds played with a sensor are saved"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_different_wifi_board_needs_a_new_calibration() {
+        let dir = test_dir("wifi");
+        let mut app = test_app(&dir);
+        let first: IpAddr = "192.168.1.20".parse().expect("address");
+        let second: IpAddr = "192.168.1.21".parse().expect("address");
+        calibrate(&mut app.tracker);
+        for sender in [Some(first), None, Some(first)] {
+            app.note_wifi_sender(sender);
+        }
+        assert!(
+            app.tracker.is_calibrated() && app.toast.is_none(),
+            "the same board, back after a gap, keeps its calibration"
+        );
+
+        app.note_wifi_sender(Some(second));
+        assert!(
+            !app.tracker.is_calibrated(),
+            "another board's mounting is unknown"
+        );
+        let toast = app.toast.take().expect("the physio is told");
+        assert!(
+            toast.error && toast.text.contains("192.168.1.21"),
+            "{}",
+            toast.text
+        );
+
+        app.switch_source(Source::Wifi);
+        calibrate(&mut app.tracker);
+        app.note_wifi_sender(Some(first));
+        assert!(
+            app.tracker.is_calibrated() && app.toast.is_none(),
+            "the first board after reconnecting is not a change"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

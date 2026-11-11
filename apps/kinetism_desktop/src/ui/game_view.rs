@@ -425,6 +425,9 @@ impl KinetismApp {
                 },
             );
             ui::chip(ui, &format!("{} arm", self.side().label()), theme::MUTED);
+            if self.practice_only() {
+                ui::chip(ui, "Simulator: practice only, not saved", theme::WARN);
+            }
             ui.label(ui::small(format!(
                 "Score {UNLOCK_SCORE_PERCENT:.0}% or more to unlock the next level."
             )));
@@ -924,6 +927,7 @@ impl KinetismApp {
             Vec2::new(520.0, 380.0).min(rect.size() - Vec2::splat(20.0)),
         );
         let mut action = None;
+        let saved = self.store.games.iter().any(|g| g.id == result.id);
         ui.scope_builder(egui::UiBuilder::new().max_rect(panel), |ui| {
             card(ui, |ui| {
                 ui.vertical_centered(|ui| {
@@ -939,7 +943,9 @@ impl KinetismApp {
                         result.max_elevation_deg,
                         if result.bombs_hit > 0 { format!(" · {} bomb(s)", result.bombs_hit) } else { String::new() }
                     )));
-                    if let Some(level) = self.play.unlocked {
+                    if !saved {
+                        ui.label(RichText::new("Simulator round, not saved").color(theme::WARN));
+                    } else if let Some(level) = self.play.unlocked {
                         ui.label(RichText::new(format!("🔓 New level unlocked: {}", level.title())).size(18.0).color(theme::GOOD));
                     } else if result.score_percent < UNLOCK_SCORE_PERCENT && result.level.next().is_some() {
                         ui.label(RichText::new(format!("Score {UNLOCK_SCORE_PERCENT:.0}% to unlock the next level - keep going!")).color(theme::WARN));
@@ -1070,6 +1076,14 @@ pub fn apply_event(app: &mut KinetismApp, event: GameEvent) {
                 return;
             };
             let session = game.to_session(&patient, chrono::Utc::now());
+            if app.practice_only() {
+                // Shown, but neither saved nor unlocking: the simulator is not the patient.
+                app.play.unlocked = None;
+                app.play.result = Some(session);
+                app.voice
+                    .say(&format!("Practice round: {score:.0} percent."), true);
+                return;
+            }
             let next = level.next();
             let override_all = app.store.settings.physio_unlock_all;
             let was_unlocked = next
